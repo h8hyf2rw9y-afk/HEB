@@ -1,4 +1,4 @@
-"""Explicit, validated DuckDB dataset catalog; no model-generated SQL."""
+"""Allowlisted schemas for the synthetic H-E-B exercise CSVs."""
 from __future__ import annotations
 
 import re
@@ -28,15 +28,21 @@ class DatasetSpec:
             identifier(col)
         if self.date_column:
             identifier(self.date_column)
-        if not self.csv_path.suffix.lower() == ".csv":
+        if self.csv_path.suffix.lower() != ".csv":
             raise ValueError("Only CSV inputs are allowed")
 
 
-def build_catalog(data_dir: Path) -> dict[str, DatasetSpec]:
-    """No schema is assumed until the HEB data dictionary is inspected.
+_SCHEMAS = {
+    "sales": ("ventas.csv", ("tienda_id", "sku", "canal"), ("venta_neta_mxn", "unidades", "descuento_mxn"), "fecha"),
+    "inventory": ("inventario.csv", ("tienda_id", "sku"), ("existencia", "punto_reorden"), None),
+    "tickets": ("tickets_mesa_servicio.csv", ("tienda_id", "categoria", "prioridad", "estado"), ("ticket_id",), "fecha_creacion"),
+}
 
-    Replace this empty catalog with approved DatasetSpec declarations.
-    Do not infer a table layout from model output or from arbitrary uploads.
-    """
-    _ = data_dir
-    return {}
+
+def build_catalog(data_dir: Path) -> dict[str, DatasetSpec]:
+    """Register only the three approved analytical datasets, if present."""
+    return {
+        name: DatasetSpec(name, data_dir / filename, dimensions, measures, date_column)
+        for name, (filename, dimensions, measures, date_column) in _SCHEMAS.items()
+        if (data_dir / filename).is_file()
+    }
