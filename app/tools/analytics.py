@@ -14,7 +14,7 @@ from pathlib import Path
 DATA_DIR = Path(__file__).resolve().parents[2] / "candidatos" / "datos"
 MONTHS = {"junio": "2026-06", "julio": "2026-07", "agosto": "2026-08"}
 DATA_WORDS = re.compile(
-    r"\b(venta|ventas|vendi|vendio|vendimos|vendieron|facturacion|ingresos|"
+    r"\b(venta|ventas|vendi|vendio|vendimos|vendieron|vender|venderemos|facturacion|ingresos|"
     r"unidades|producto|productos|sku|inventario|existencia|existencias|stock|"
     r"reorden|surtir|agotad[oa]s?|ticket|tickets|incidencias|mesa de servicio|"
     r"canal|categorias?|descuento|descuentos)\b"
@@ -27,7 +27,7 @@ POLICY_HINT = re.compile(
 ANALYTIC_HINT = re.compile(
     r"\b(cuant[oa]s?|total|sum[ao]|mayor|menor|mas|menos|"
     r"mejor|peor|ranking|compar|promedio|por tienda|por sucursal|"
-    r"en junio|en julio|en agosto|vend|factur|"
+    r"en junio|en julio|en agosto|vend|vender|factur|"
     r"hay|tenemos|quedan|abiertos|pendientes|criticos)\b"
 )
 
@@ -240,7 +240,7 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     group = ("p.nombre" if by_product else "p.categoria" if by_category else
              "v.canal" if by_channel else "t.nombre" if by_store else None)
     group_name = "producto" if by_product else "categoría" if by_category else "canal" if by_channel else "tienda"
-    if store_id and not ranking and not re.search(r"\\b(por tienda|por sucursal|cada tienda|cada sucursal)\\b", q):
+    if store_id and not ranking and not re.search(r"\b(por tienda|por sucursal|cada tienda|cada sucursal)\b", q):
         group = None
     if ranking and group is None:
         return _missing(question, "Indica si deseas comparar tiendas, productos, categorías o canales.")
