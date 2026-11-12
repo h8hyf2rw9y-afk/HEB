@@ -36,6 +36,7 @@ class Metrics(BaseModel):
     llm_model: str | None = None
     generation_latency_ms: float = 0
     generated: bool = False  # True when the shown answer was written by the model
+    answer_mode: str = "unknown"  # general_unverified | assistant_info | grounded_data | grounded_policy | needs_context | source_listing
     fallback_reason: str | None = None  # why the deterministic answer was kept
     # Whole request, including retrieval/SQL and generation.
     latency_ms: float = 0
@@ -106,7 +107,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         if assistant_intent in {"ollama_status", "model"}:
             return ChatResponse(
                 answer=default_answer, status="answered",
-                metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+                metrics=Metrics(answer_mode="assistant_info", latency_ms=round((time.perf_counter() - start) * 1000, 2)),
             )
         response = generate_general_answer(
             question, LLM_SETTINGS, default_answer=default_answer,
@@ -114,6 +115,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(
             answer=response.answer, status="answered",
             metrics=Metrics(
+                answer_mode="general_unverified" if response.generated else "assistant_info",
                 input_tokens=response.input_tokens, output_tokens=response.output_tokens,
                 total_tokens=response.input_tokens + response.output_tokens,
                 llm_calls=response.llm_calls,
@@ -131,7 +133,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             answer=business_result.answer,
             status=business_result.status,
             evidence=business_result.evidence,
-            metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+            metrics=Metrics(answer_mode=("grounded_data" if business_result.evidence and all(e.get("source_type") == "csv" for e in business_result.evidence) else "source_listing" if business_result.evidence else "needs_context"), latency_ms=round((time.perf_counter() - start) * 1000, 2)),
         )
     # Non-business conversation uses the local LLM directly. It is not
     # represented as CSV/PDF-grounded evidence and cannot invent policy citations.
@@ -146,6 +148,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(
             answer=response.answer, status="answered",
             metrics=Metrics(
+                answer_mode="general_unverified",
                 input_tokens=response.input_tokens, output_tokens=response.output_tokens,
                 total_tokens=response.input_tokens + response.output_tokens,
                 llm_calls=response.llm_calls,
@@ -175,6 +178,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             status=result.status,
             evidence=result.evidence,
             metrics=Metrics(
+                answer_mode="grounded_data",
                 input_tokens=outcome.input_tokens,
                 output_tokens=outcome.output_tokens,
                 total_tokens=outcome.total_tokens,
@@ -209,6 +213,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         evidence=evidence,
         conflicts=conflicts,
         metrics=Metrics(
+            answer_mode="grounded_policy",
             input_tokens=rag_metrics.input_tokens + outcome.input_tokens,
             output_tokens=rag_metrics.output_tokens + outcome.output_tokens,
             total_tokens=rag_metrics.input_tokens + rag_metrics.output_tokens + outcome.total_tokens,
