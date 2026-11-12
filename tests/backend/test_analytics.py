@@ -79,16 +79,17 @@ def test_product_ranking(data: Path):
 def test_inventory_snapshot(data: Path):
     a = answer_data_question("¿Qué productos están bajo el punto de reorden en inventario?", data)
     assert a.status == "answered"
-    assert "Norte: 1 SKU" in a.answer
-    assert "Sur: 1 SKU" in a.answer
+    assert "Norte · SKU-1 · Leche: existencia 0, punto de reorden 10." in a.answer
+    assert "Sur · SKU-1 · Leche: existencia 5, punto de reorden 10." in a.answer
     assert "2026-09-01" in a.evidence[0]["reference"]
 
 
 def test_tickets(data: Path):
     a = answer_data_question("¿Cuántos tickets están pendientes?", data)
     assert a.status == "answered"
-    assert "Norte: 2 tickets, 1 pendientes y 1 críticos pendientes" in a.answer
-    assert "Sur: 1 tickets, 1 pendientes" in a.answer
+    assert "Norte: 1 tickets pendientes." in a.answer
+    assert "Sur: 1 tickets pendientes." in a.answer
+    assert "Total: 2 tickets." in a.answer
 
 
 def test_unsupported_period_abstains(data: Path):
@@ -122,6 +123,30 @@ def test_unknown_store_abstains(data: Path):
     a = answer_data_question("¿Cuánto vendimos en T99 en junio?", data)
     assert a.status == "insufficient_data"
     assert a.evidence == []
+
+
+
+
+def test_critical_open_tickets_only(data: Path):
+    a = answer_data_question("¿Cuántos tickets de prioridad Crítica siguen abiertos y de qué tiendas son?", data)
+    assert a.status == "answered"
+    assert "Norte: 1 tickets críticos pendientes." in a.answer
+    assert "Sur:" not in a.answer
+    assert "Total: 1 tickets." in a.answer
+
+
+def test_inventory_specific_store_lists_skus(data: Path):
+    a = answer_data_question("¿Qué productos de la tienda T01 están por debajo del punto de reorden?", data)
+    assert a.status == "answered"
+    assert "SKU-1 · Leche: existencia 0, punto de reorden 10" in a.answer
+    assert "Sur" not in a.answer
+    assert "SKU-2" not in a.answer
+
+
+def test_future_prediction_abstains(data: Path):
+    a = answer_data_question("¿Cuánto vamos a vender en diciembre?", data)
+    assert a.status == "insufficient_data"
+    assert not a.evidence
 
 def test_chat_sales_real_data():
     result = TestClient(app).post("/chat", json={"question": "¿Cuánto vendimos en agosto?"})
