@@ -57,7 +57,7 @@ def build_messages(
             )
             notes.append(f"- {c.get('topic')}: {sides}. Resultado: {outcome}.")
         lines.append("<contradicciones>\n" + "\n".join(notes) + "\n</contradicciones>")
-    if kind == "datos" and verified_answer.count("\\n") >= 2:
+    if kind == "datos" and verified_answer.count("\n") >= 2:
         lines.append(
             "ATENCIÓN: Esta respuesta contiene varias filas verificadas. No entregues solo el ganador: "
             "reproduce TODAS las tiendas o SKU, con su cifra correspondiente y fecha de corte. "
