@@ -36,3 +36,26 @@ def test_real_llama_rewrites_a_data_answer_and_passes_validation():
         assert figure in out.answer
     if not out.generated:
         pytest.fail(f"llama3.2 respondió pero la redacción no pasó la validación ({out.fallback_reason}): {out.warnings}")
+
+
+def test_real_llama_agent_chooses_a_tool_for_a_data_question():
+    """Agent mode against the real model: it must call a verified tool, and the shown
+    answer must keep the DuckDB figures whether or not its prose passes validation."""
+    from app.api import main
+    from app.llm import LLMSettings, ToolAgent
+
+    settings = LLMSettings(enabled=True, base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+                           model=os.getenv("HEB_LLM_MODEL", "llama3.2"), timeout_s=120, mode="agente")
+    out = ToolAgent(settings, main.AGENT_TOOLS).run("¿Qué tienda vendió más en agosto de 2026?")
+    print("\nRESULTADO REAL agente:", {
+        "handled": out.handled, "generated": out.generated, "fallback_reason": out.fallback_reason,
+        "tool_calls": out.tool_calls, "llm_calls": out.llm_calls, "input_tokens": out.input_tokens,
+        "output_tokens": out.output_tokens, "generation_latency_ms": out.generation_latency_ms,
+        "warnings": out.warnings,
+    })
+    print("RESPUESTA:", out.answer)
+    assert out.fallback_reason not in ("ollama_no_disponible", "timeout"), out.warnings
+    assert out.llm_calls >= 1 and out.input_tokens > 0
+    if not out.tool_calls:
+        pytest.fail(f"{settings.model} no llamó a ninguna herramienta ({out.fallback_reason})")
+    assert "$2,163,062.36 MXN" in out.answer

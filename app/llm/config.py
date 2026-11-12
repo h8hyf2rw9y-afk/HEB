@@ -17,6 +17,9 @@ class LLMSettings:
     temperature: float = 0.0
     seed: int = 42
     max_output_tokens: int = 700
+    # "agente": the model chooses and runs the verified tools (DuckDB/RAG) and writes the answer.
+    # "redaccion": the deterministic router queries and the model only rewrites the result.
+    mode: str = "agente"
 
     @classmethod
     def from_env(cls) -> "LLMSettings":
@@ -30,4 +33,5 @@ class LLMSettings:
             model=env("HEB_LLM_MODEL", "llama3.2"),
             timeout_s=float(env("HEB_LLM_TIMEOUT_S", "60")),
             max_output_tokens=int(env("HEB_LLM_MAX_OUTPUT_TOKENS", "700")),
+            mode="redaccion" if env("HEB_LLM_MODE", "agente").lower() in {"redaccion", "redacción", "rewrite"} else "agente",
         )

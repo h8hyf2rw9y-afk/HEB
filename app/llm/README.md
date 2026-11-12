@@ -1,20 +1,30 @@
 # Capa generativa local (Ollama + Llama 3.2)
 
-Redacta en español natural las respuestas que **ya calcularon y verificaron** DuckDB o el RAG. El modelo no consulta datos, no genera SQL, no recupera documentos ni decide qué política prevalece. Si la redacción altera algo, o si Ollama no responde, el usuario recibe la respuesta determinista original.
+Dos modos, elegidos con `HEB_LLM_MODE` cuando `HEB_LLM_ENABLED=true`:
+
+**`agente` (por defecto).** Llama 3.2 decide qué consulta hacer. Recibe la pregunta y dos herramientas, `consultar_datos_tienda` (DuckDB con SQL fijo) y `buscar_politicas` (RAG de los PDF), elige cuál llamar y con qué texto, y redacta la respuesta con lo que devolvieron. El modelo nunca escribe SQL ni lee los archivos: solo puede invocar esas funciones verificadas.
 
 ```text
-pregunta ─► FastAPI ─► DuckDB o RAG ─► respuesta verificada ─► Llama 3.2 (/api/chat) ─► validación ─► respuesta
-                                             │                                            │ falla
-                                             └────────────── fallback determinista ◄──────┘
+pregunta ─► Llama 3.2 ─► tool_call ─► DuckDB / RAG (código verificado) ─► Llama 3.2 redacta ─► validación ─► respuesta
+                │ no llamó herramienta / Ollama caído          │ abstención o validación fallida
+                ▼                                              ▼
+       ruta determinista                          salida verificada de la herramienta, tal cual
 ```
+
+Protecciones del agente: si el modelo cambia el mes, año, tienda o SKU al pasar la consulta a la herramienta, se ejecuta la pregunta original; como máximo 3 consultas por pregunta; una abstención de la herramienta se muestra tal cual; una salida de herramienta con instrucciones sospechosas no se devuelve al modelo; `metrics.tool_calls` muestra qué consultó el modelo y con qué texto.
+
+**`redaccion`.** El enrutador determinista consulta y el modelo solo reescribe la respuesta verificada.
+
+En ambos modos la redacción pasa por el mismo validador y cualquier fallo devuelve texto verificado, nunca texto inventado. Saludos, diagnóstico de Ollama y conversación general no pasan por el agente.
 
 ## Archivos
 | Archivo | Función |
 | --- | --- |
-| `config.py` | `LLMSettings.from_env()`: `HEB_LLM_ENABLED`, `OLLAMA_BASE_URL`, `HEB_LLM_MODEL`, `HEB_LLM_TIMEOUT_S`, `HEB_LLM_MAX_OUTPUT_TOKENS` |
+| `config.py` | `LLMSettings.from_env()`: `HEB_LLM_ENABLED`, `OLLAMA_BASE_URL`, `HEB_LLM_MODEL`, `HEB_LLM_TIMEOUT_S`, `HEB_LLM_MAX_OUTPUT_TOKENS`, `HEB_LLM_MODE` (`agente` o `redaccion`) |
 | `ollama_client.py` | `POST {OLLAMA_BASE_URL}/api/chat` sin streaming, `temperature=0`, `seed=42`. Errores tipados: no disponible, timeout, respuesta vacía, JSON o HTTP inválidos. Lee los contadores reales `prompt_eval_count` y `eval_count`. |
 | `prompts.py` | Mensaje de sistema con las reglas y mensaje de usuario con la respuesta verificada delimitada en `<respuesta_verificada>` como **datos**, más `<contradicciones>` cuando el RAG las detectó |
 | `validation.py` | Comprobaciones conservadoras sobre la redacción (ver abajo) |
+| `agent.py` | `ToolAgent.run(...)`: bucle de llamadas con herramientas (`tools` de `/api/chat`), protecciones y fallback; devuelve `AgentOutcome` |
 | `service.py` | `GroundedWriter.rewrite(...)`: orquesta, nunca lanza excepciones, devuelve `GenerationOutcome` con la respuesta final, métricas y motivo de fallback |
 
 ## Activar y desactivar
@@ -60,8 +70,8 @@ Las respuestas con estado `insufficient_data`, `needs_clarification` o `error` *
 
 **Costo:** la inferencia es local, así que no hay costo por token de API. Sí hay costo de ejecución local: el modelo ocupa memoria (`load_duration` de Ollama) y CPU o GPU durante segundos por respuesta, frente a milisegundos del modo determinista. Los tokens de embeddings son otro consumo distinto, que se reporta por separado.
 
-## Comparar los dos modos en tu equipo
-El script ejecuta el Modo A (determinista) y el Modo B (llama3.2) sobre las mismas 12 preguntas; activa el LLM por sí mismo en el Modo B.
+## Comparar los modos en tu equipo
+El script ejecuta sobre las mismas 12 preguntas el Modo A (determinista), el Modo B (redacción) y el Modo C (agente); activa el LLM por sí mismo en B y C.
 ```powershell
 $env:HEB_LLM_MODEL = "llama3.2"
 $env:OLLAMA_BASE_URL = "http://localhost:11434"

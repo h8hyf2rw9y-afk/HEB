@@ -113,10 +113,24 @@ def render_metrics(metrics: object) -> None:
         b.metric("Llamadas LLM", str(metrics.get("llm_calls", 0)))
         c.metric("Tokens LLM", f'{metrics.get("input_tokens", 0)} + {metrics.get("output_tokens", 0)}')
         st.caption(llm_summary(metrics))
+        for line in tool_call_lines(metrics):
+            st.caption(line)
         if metrics.get("embedding_calls"):
             st.caption(f'Embeddings: {metrics["embedding_calls"]} llamadas · {metrics.get("embedding_input_tokens", 0)} tokens')
         for warning in metrics.get("warnings") or []:
             st.caption(f"⚠ {warning}")
+
+
+def tool_call_lines(metrics: dict) -> list[str]:
+    """Agent mode: which verified query the model decided to run, and with what text."""
+    lines = []
+    for call in metrics.get("tool_calls") or []:
+        label = {"consultar_datos_tienda": "Datos de tienda (DuckDB)", "buscar_politicas": "Políticas (PDF)"}.get(call.get("name"), call.get("name"))
+        query = call.get("query") or call.get("arguments")
+        lines.append(f'🔧 El modelo consultó {label}: «{query}» → {call.get("status")}')
+        if call.get("warning"):
+            lines.append(f'⚠ {call["warning"]}')
+    return lines
 
 
 def llm_summary(metrics: dict) -> str:

@@ -1,9 +1,11 @@
-"""Compare Mode A (deterministic answers) with Mode B (answers rewritten by the local
-LLM through Ollama) on the exercise questions, calling /chat in-process.
+"""Compare, on the exercise questions and calling /chat in-process:
+  Mode A: deterministic answers (no model).
+  Mode B: deterministic router + the local LLM rewrites the verified answer.
+  Mode C: agent; the LLM chooses the verified tool (DuckDB / RAG) and writes the answer.
 
-    python scripts/eval_llm_modes.py                  # Mode A + Mode B (needs Ollama + llama3.2)
+    python scripts/eval_llm_modes.py                  # A + B + C (B and C need Ollama + llama3.2)
     python scripts/eval_llm_modes.py --mode A         # Mode A only (no Ollama needed)
-    python scripts/eval_llm_modes.py --out report.json
+    python scripts/eval_llm_modes.py --mode AC --out data/eval_llm_modes.json
 
 Mode B measurements are REAL only when Ollama answers; if it does not, every row
 shows a fallback and the report says so. Nothing here simulates a model.
@@ -41,13 +43,14 @@ CASES = [
 ]
 
 
-def run_mode(client, enabled: bool) -> list[dict]:
+def run_mode(client, enabled: bool, mode: str = "redaccion") -> list[dict]:
     from app.api import main
-    from app.llm import GroundedWriter, LLMSettings
+    from app.llm import GroundedWriter, LLMSettings, ToolAgent
 
     base = LLMSettings.from_env()
-    settings = LLMSettings(enabled=enabled, base_url=base.base_url, model=base.model, timeout_s=base.timeout_s)
+    settings = LLMSettings(enabled=enabled, base_url=base.base_url, model=base.model, timeout_s=base.timeout_s, mode=mode)
     main.WRITER = GroundedWriter(settings)
+    main.AGENT = ToolAgent(settings, main.AGENT_TOOLS)
     rows = []
     for question, kind, expected, phrases in CASES:
         t0 = time.perf_counter()
@@ -65,6 +68,7 @@ def run_mode(client, enabled: bool) -> list[dict]:
             "wall_ms": wall, "embedding_calls": m.get("embedding_calls", 0),
             "embedding_input_tokens": m.get("embedding_input_tokens", 0),
             "retrieval_mode": m.get("retrieval_mode"), "warnings": m.get("warnings", []),
+            "tool_calls": m.get("tool_calls", []),
             "words": len(data["answer"].split()), "answer": data["answer"],
         })
     return rows
@@ -89,12 +93,13 @@ def summarize(rows: list[dict]) -> dict:
         "latency_ms_median": round(statistics.median(lat), 1), "latency_ms_max": round(max(lat), 1),
         "words_median_answered": statistics.median([r["words"] for r in answered]) if answered else None,
         "embedding_input_tokens_total": sum(r["embedding_input_tokens"] for r in rows),
+        "questions_where_model_called_a_tool": sum(1 for r in rows if r.get("tool_calls")),
     }
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["A", "B", "AB"], default="AB")
+    parser.add_argument("--mode", default="ABC", help="cualquier combinación de A, B, C")
     parser.add_argument("--out", help="archivo JSON para guardar el reporte completo")
     args = parser.parse_args(argv)
     try:
@@ -110,14 +115,16 @@ def main(argv=None) -> int:
     client = TestClient(api.app)
     report = {"platform": platform.platform(), "python": platform.python_version(),
               "ollama_base_url": api.LLM_SETTINGS.base_url, "llm_model": api.LLM_SETTINGS.model, "modes": {}}
-    if "A" in args.mode:
+    if "A" in args.mode.upper():
         rows = run_mode(client, enabled=False)
         report["modes"]["A_determinista"] = {"summary": summarize(rows), "rows": rows}
-    if "B" in args.mode:
-        rows = run_mode(client, enabled=True)
+    for letter, name, mode in (("B", "B_llm", "redaccion"), ("C", "C_agente", "agente")):
+        if letter not in args.mode.upper():
+            continue
+        rows = run_mode(client, enabled=True, mode=mode)
         s = summarize(rows)
         s["real_model_used"] = s["generated_answers"] > 0 or any(r["llm_calls"] for r in rows)
-        report["modes"]["B_llm"] = {"summary": s, "rows": rows}
+        report["modes"][name] = {"summary": s, "rows": rows}
     for name, mode in report["modes"].items():
         print(f"\n== Modo {name}")
         for k, v in mode["summary"].items():
@@ -126,8 +133,9 @@ def main(argv=None) -> int:
             flag = "OK " if r["status_ok"] and r["facts_ok"] else "REV"
             who = r["llm_model"] if r["generated"] else f"determinista ({r['fallback_reason']})"
             print(f"  [{flag}] {r['status']:17} {r['latency_ms']:8.1f} ms  tok {r['input_tokens']}+{r['output_tokens']:<4} {who:40} {r['question']}")
-    if "B_llm" in report["modes"] and not report["modes"]["B_llm"]["summary"]["real_model_used"]:
-        print("\nAVISO: Ollama no respondió; el Modo B no contiene mediciones de un modelo real (todo fue fallback).")
+    for name in ("B_llm", "C_agente"):
+        if name in report["modes"] and not report["modes"][name]["summary"]["real_model_used"]:
+            print(f"\nAVISO: Ollama no respondió; el modo {name} no contiene mediciones de un modelo real (todo fue fallback).")
     if args.out:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)  # data/ may not exist yet

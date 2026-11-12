@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -41,6 +41,8 @@ class ChatResult:
     load_ms: float = 0.0  # Ollama load_duration (model load into memory)
     prompt_eval_ms: float = 0.0
     eval_ms: float = 0.0
+    # Tools the model asked to run: [{"name": str, "arguments": dict}] (only with ``tools=``).
+    tool_calls: list[dict] = field(default_factory=list)
 
     @property
     def tokens_per_s(self) -> float | None:
@@ -71,6 +73,29 @@ def _token_count(data: dict, field: str) -> int:
     return value
 
 
+def _tool_calls(raw: object) -> list[dict]:
+    """Normalise Ollama ``message.tool_calls``; a malformed shape is a bad response."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise LLMBadResponse("tool_calls de Ollama no es una lista")
+    calls = []
+    for item in raw:
+        fn = item.get("function") if isinstance(item, dict) else None
+        if not isinstance(fn, dict) or not isinstance(fn.get("name"), str) or not fn["name"].strip():
+            raise LLMBadResponse(f"tool_call de Ollama mal formado: {item!r}"[:200])
+        args = fn.get("arguments", {})
+        if isinstance(args, str):  # some Ollama versions/models send a JSON string
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise LLMBadResponse("Argumentos de tool_call no son JSON válido") from exc
+        if not isinstance(args, dict):
+            raise LLMBadResponse("Argumentos de tool_call no son un objeto")
+        calls.append({"name": fn["name"].strip(), "arguments": args})
+    return calls
+
+
 class OllamaChatClient:
     def __init__(self, base_url: str, model: str, timeout_s: float, transport: httpx.BaseTransport | None = None):
         self.base_url = base_url.rstrip("/")
@@ -78,13 +103,16 @@ class OllamaChatClient:
         self.timeout_s = timeout_s
         self._transport = transport  # injectable for tests (httpx.MockTransport)
 
-    def chat(self, messages: list[dict], *, temperature: float = 0.0, seed: int = 42, num_predict: int = 700) -> ChatResult:
+    def chat(self, messages: list[dict], *, temperature: float = 0.0, seed: int = 42, num_predict: int = 700,
+             tools: list[dict] | None = None) -> ChatResult:
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": temperature, "seed": seed, "num_predict": num_predict},
         }
+        if tools:
+            payload["tools"] = tools
         start = time.perf_counter()
         try:
             with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:
@@ -103,9 +131,12 @@ class OllamaChatClient:
         if not isinstance(data, dict) or not isinstance(data.get("message"), dict):
             raise LLMBadResponse("Respuesta de Ollama sin campo 'message'")
         content = data["message"].get("content")
+        if content is None and tools:
+            content = ""
         if not isinstance(content, str):
             raise LLMBadResponse("Respuesta de Ollama sin texto")
-        if not content.strip():
+        tool_calls = _tool_calls(data["message"].get("tool_calls")) if tools else []
+        if not content.strip() and not tool_calls:
             raise LLMEmptyResponse("Ollama devolvió una respuesta vacía")
         model = data.get("model")
         return ChatResult(
@@ -117,4 +148,5 @@ class OllamaChatClient:
             load_ms=_ms(data.get("load_duration")),
             prompt_eval_ms=_ms(data.get("prompt_eval_duration")),
             eval_ms=_ms(data.get("eval_duration")),
+            tool_calls=tool_calls,
         )

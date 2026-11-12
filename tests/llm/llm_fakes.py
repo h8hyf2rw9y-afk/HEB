@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import httpx
+import pytest
 
 # tests/llm deliberately has NO conftest.py: tests/rag does `from conftest import ...`
 # and a second conftest module would shadow it depending on collection order.
@@ -61,3 +62,30 @@ def make_writer(behaviour, *, enabled: bool = True, timeout_s: float = 5.0) -> t
     client = OllamaChatClient(settings.base_url, settings.model, settings.timeout_s, transport=fake.transport)
     return GroundedWriter(settings, client), fake
 
+
+@pytest.fixture(scope="module")
+def policy_index_dir(tmp_path_factory) -> Path:
+    """Build the RAG index from the 4 exercise PDFs into a temp dir (data/rag_index is
+    git-ignored, so CI has no prebuilt index)."""
+    from app.rag.config import RagSettings
+    from app.rag.extraction import discover_pdfs
+    from app.rag.index import PolicyIndex
+
+    pdfs = discover_pdfs(ROOT / "candidatos" / "politicas")
+    if len(pdfs) != 4:
+        pytest.skip("candidatos/politicas no disponible")
+    target = tmp_path_factory.mktemp("rag_index")
+    PolicyIndex.build(pdfs, RagSettings(embeddings="off")).save(target)
+    return target
+
+
+@pytest.fixture
+def policy_index(policy_index_dir, monkeypatch):
+    """Point the shared retriever used by /chat at the temp index for one test."""
+    from app.rag import service
+
+    monkeypatch.setenv("HEB_RAG_INDEX_DIR", str(policy_index_dir))
+    monkeypatch.setenv("HEB_RAG_EMBEDDINGS", "off")
+    service.reset_retriever()
+    yield policy_index_dir
+    service.reset_retriever()

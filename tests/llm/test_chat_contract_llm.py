@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from llm_fakes import FakeOllama, ollama_reply  # first: also puts the repo root on sys.path
+from llm_fakes import FakeOllama, ollama_reply, policy_index, policy_index_dir  # noqa: F401 (fixtures); first: also puts the repo root on sys.path
 
 from app.api import main
 from app.llm.config import LLMSettings
@@ -22,34 +22,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 client = TestClient(main.app)
 ROOT = Path(__file__).resolve().parents[2]
-
-
-@pytest.fixture(scope="module")
-def policy_index_dir(tmp_path_factory) -> Path:
-    """Build the RAG index from the 4 exercise PDFs into a temp dir (data/rag_index is
-    git-ignored, so CI has no prebuilt index)."""
-    from app.rag.config import RagSettings
-    from app.rag.extraction import discover_pdfs
-    from app.rag.index import PolicyIndex
-
-    pdfs = discover_pdfs(ROOT / "candidatos" / "politicas")
-    if len(pdfs) != 4:
-        pytest.skip("candidatos/politicas no disponible")
-    target = tmp_path_factory.mktemp("rag_index")
-    PolicyIndex.build(pdfs, RagSettings(embeddings="off")).save(target)
-    return target
-
-
-@pytest.fixture
-def policy_index(policy_index_dir, monkeypatch):
-    """Point the shared retriever used by /chat at the temp index for one test."""
-    from app.rag import service
-
-    monkeypatch.setenv("HEB_RAG_INDEX_DIR", str(policy_index_dir))
-    monkeypatch.setenv("HEB_RAG_EMBEDDINGS", "off")
-    service.reset_retriever()
-    yield policy_index_dir
-    service.reset_retriever()
 
 
 CONTRACT_KEYS = {"answer", "evidence", "conflicts", "metrics", "status"}
@@ -134,7 +106,7 @@ def test_tampered_figure_from_model_is_discarded(monkeypatch):
 
 def test_health_llm_reports_configuration_without_calling_ollama():
     data = client.get("/health/llm").json()
-    assert set(data) == {"enabled", "model", "base_url", "timeout_s"}
+    assert set(data) == {"enabled", "model", "base_url", "timeout_s", "mode"}
 
 
 def test_settings_from_env_defaults_and_overrides(monkeypatch):

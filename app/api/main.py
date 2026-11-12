@@ -12,7 +12,7 @@ from app.data.catalog import build_catalog
 from app.api.assistant_chat import classify_assistant_question, assistant_answer, is_general_conversation
 from app.api.business_intents import route_business_question
 from app.api.return_intents import route_returns, check_return_evidence
-from app.llm import GroundedWriter, LLMSettings
+from app.llm import AgentOutcome, GroundedWriter, LLMSettings, ToolAgent, ToolResult
 from app.llm.general import generate_general_answer
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
@@ -22,6 +22,31 @@ app = FastAPI(title="HEB AI Assistant", version="0.3.0")
 CATALOG = build_catalog(Path(__file__).resolve().parents[2] / "candidatos" / "datos")
 LLM_SETTINGS = LLMSettings.from_env()
 WRITER = GroundedWriter(LLM_SETTINGS)
+# Used on the deterministic path after the agent already spent its model calls.
+_NO_REWRITE = GroundedWriter(LLMSettings(enabled=False))
+
+
+def _tool_store_data(query: str) -> ToolResult:
+    """Agent tool: fixed, parameterized DuckDB analytics (the model never writes SQL)."""
+    r = answer_data_question(query)
+    return ToolResult(kind="datos", status=r.status, answer=r.answer, evidence=list(r.evidence))
+
+
+def _tool_policies(query: str) -> ToolResult:
+    """Agent tool: the rag-v1 policy search (extractive, cited, with conflicts)."""
+    r = search_policies(PolicySearchRequest(query=query, top_k=5))
+    m = r.metrics
+    return ToolResult(
+        kind="politicas", status=r.status, answer=r.answer,
+        evidence=[e.to_http_evidence() for e in r.evidence],
+        conflicts=[c.model_dump() for c in r.conflicts],
+        metrics={"retrieval_mode": m.retrieval_mode, "embedding_calls": m.embedding_calls,
+                 "embedding_input_tokens": m.embedding_input_tokens, "embedding_latency_ms": m.embedding_latency_ms},
+    )
+
+
+AGENT_TOOLS = {"consultar_datos_tienda": _tool_store_data, "buscar_politicas": _tool_policies}
+AGENT = ToolAgent(LLM_SETTINGS, AGENT_TOOLS)
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
@@ -48,6 +73,8 @@ class Metrics(BaseModel):
     embedding_input_tokens: int = 0
     embedding_latency_ms: float = 0
     warnings: list[str] = Field(default_factory=list)
+    # Agent mode: verified tools the model chose to run, with the query actually executed.
+    tool_calls: list[dict] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -87,12 +114,68 @@ def health_llm() -> dict:
         "model": LLM_SETTINGS.model,
         "base_url": LLM_SETTINGS.base_url,
         "timeout_s": LLM_SETTINGS.timeout_s,
+        "mode": LLM_SETTINGS.mode,
     }
+
+
+def _agent_applies(question: str) -> bool:
+    """Business questions go to the model first when agent mode is on. Live Ollama
+    diagnostics, greetings and off-topic chat keep their own exact/explicit paths."""
+    return (AGENT.settings.enabled and AGENT.settings.mode == "agente" and bool(question)
+            and len(question) <= 1000
+            and not classify_assistant_question(question) and not is_general_conversation(question))
+
+
+def _agent_metrics(out: AgentOutcome, start: float) -> Metrics:
+    emb = out.tool_metrics
+    modes = [m.get("retrieval_mode") for m in emb if m.get("retrieval_mode")]
+    return Metrics(
+        answer_mode="grounded_policy" if out.kind == "politicas" else "grounded_data",
+        input_tokens=out.input_tokens, output_tokens=out.output_tokens,
+        total_tokens=out.input_tokens + out.output_tokens, llm_calls=out.llm_calls,
+        llm_model=out.model if out.llm_calls else None,
+        generation_latency_ms=out.generation_latency_ms, generated=out.generated,
+        fallback_reason=out.fallback_reason,
+        latency_ms=round((time.perf_counter() - start) * 1000, 2),
+        retrieval_mode=modes[0] if modes else None,
+        embedding_calls=sum(m.get("embedding_calls", 0) for m in emb),
+        embedding_input_tokens=sum(m.get("embedding_input_tokens", 0) for m in emb),
+        embedding_latency_ms=round(sum(m.get("embedding_latency_ms", 0) for m in emb), 1),
+        warnings=out.warnings,
+        tool_calls=out.tool_calls,
+    )
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     start = time.perf_counter()
+    question = request.question.strip()
+    if _agent_applies(question):
+        out = AGENT.run(question, request.previous_question)
+        if out.handled:
+            return ChatResponse(answer=out.answer, status=out.status, evidence=out.evidence,
+                                conflicts=out.conflicts, metrics=_agent_metrics(out, start))
+        # The model did not consult a tool (or Ollama failed before any tool ran):
+        # answer deterministically, report the attempt, and do not call the model again.
+        response = _deterministic_chat(request, start, _NO_REWRITE)
+        m = response.metrics
+        m.llm_calls += out.llm_calls
+        m.input_tokens += out.input_tokens
+        m.output_tokens += out.output_tokens
+        m.total_tokens += out.input_tokens + out.output_tokens
+        m.llm_model = out.model if out.llm_calls else m.llm_model
+        m.generation_latency_ms = out.generation_latency_ms
+        m.generated = False
+        m.fallback_reason = out.fallback_reason
+        m.warnings = out.warnings + list(m.warnings)
+        m.tool_calls = out.tool_calls
+        m.latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        return response
+    return _deterministic_chat(request, start, None)
+
+
+def _deterministic_chat(request: ChatRequest, start: float, writer: GroundedWriter | None) -> ChatResponse:
+    writer = writer or WRITER  # resolved at call time so tests can swap WRITER
     question = request.question.strip()
     if not question:
         return ChatResponse(
@@ -215,7 +298,7 @@ def chat(request: ChatRequest) -> ChatResponse:
                 status="error",
                 metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
             )
-        outcome = WRITER.rewrite(
+        outcome = writer.rewrite(
             question=question, kind="datos", status=result.status,
             verified_answer=result.answer, evidence=result.evidence,
         )
@@ -249,7 +332,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     rag_metrics = result.metrics
     evidence = [item.to_http_evidence() for item in result.evidence]
     conflicts = [item.model_dump() for item in result.conflicts]
-    outcome = WRITER.rewrite(
+    outcome = writer.rewrite(
         question=question, kind="politicas", status=result.status,
         verified_answer=result.answer, evidence=evidence, conflicts=conflicts,
     )
