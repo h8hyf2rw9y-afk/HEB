@@ -67,7 +67,7 @@ class GroundedWriter:
         # Avoid spending seconds of CPU on trivial results such as "Total: 0 tickets."
         if (
             kind == "datos" and not conflicts
-            and len(verified_answer.split()) <= 12
+            and len(verified_answer.split()) <= 8
             and len(verified_answer.splitlines()) <= 2
         ):
             fallback.fallback_reason = "redaccion_innecesaria"
