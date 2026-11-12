@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.data.catalog import build_catalog
+from app.api.assistant_chat import classify_assistant_question, assistant_answer
 from app.llm import GroundedWriter, LLMSettings
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
@@ -92,6 +93,17 @@ def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(
             answer="Escribe una pregunta para continuar.",
             status="needs_clarification",
+        )
+    # Conversational/meta questions are not business data or policy evidence.
+    # A connection question probes Ollama live; it must never claim connectivity
+    # solely because a model name is configured.
+    assistant_intent = classify_assistant_question(question)
+    if assistant_intent:
+        answer = assistant_answer(assistant_intent, LLM_SETTINGS)
+        return ChatResponse(
+            answer=answer,
+            status="answered",
+            metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
         )
     # Data queries use fixed, parameterized SQL. Everything else goes to the RAG.
     # This also fixes previously unreachable policy questions such as SIGMA.
