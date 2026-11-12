@@ -112,7 +112,10 @@ def route_business_question(
     q = plain(question).strip(" ¡!¿?.,;:")
     if _STORE_COUNT.search(q):
         return _store_answer(data_dir)
-    if _SOURCE_DISCOVERY.search(q):
+    if _SOURCE_DISCOVERY.search(q) and not re.search(
+        r"\b(establece|dice|segun|sobre|acerca|respecto|devolucion|reembolso|merma|"
+        r"caducidad|inventario|venta|salario|colaborador|empleado)\b", q
+    ):
         return _source_answer(data_dir, policy_dir)
     # Long-lasting employment absence is NOT covered by the one-shift staffing
     # contingency in FAQ P25. Do not pass it to a PDF retriever that may return
