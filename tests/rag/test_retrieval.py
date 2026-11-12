@@ -77,7 +77,9 @@ def test_every_result_has_document_page_passage_score(retriever):
 def test_save_load_roundtrip_and_gitignore(tmp_path, hybrid_index):
     target = hybrid_index.save(tmp_path / "idx")
     assert (tmp_path / "idx" / ".gitignore").read_text() == "*\n"
-    assert json.loads(target.read_text())["version"] == 1
+    from app.rag.index import INDEX_VERSION
+
+    assert json.loads(target.read_text())["version"] == INDEX_VERSION
     loaded = PolicyIndex.load(tmp_path / "idx")
     assert [c.chunk_id for c in loaded.chunks] == [c.chunk_id for c in hybrid_index.chunks]
     a, _ = loaded.search(Q, embedder=FakeEmbedder())

@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "eval":
             sp.add_argument("--cases", required=True)
             sp.add_argument("--top-k", type=int, default=5)
+            sp.add_argument("--verify-pdf-dir", help="Verifica que cada cita exista en esa página del PDF")
 
     args = parser.parse_args(argv)
 
@@ -90,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         print(ans.model_dump_json(indent=2))
         return 0
     if args.cmd == "eval":
-        report = evaluate(retriever, load_cases(args.cases), args.top_k)
+        report = evaluate(retriever, load_cases(args.cases), args.top_k, pdf_dir=args.verify_pdf_dir)
         print(report.model_dump_json(indent=2))
         return 0 if not report.failures else 2
     return 1

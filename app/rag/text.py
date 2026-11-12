@@ -6,7 +6,7 @@ import re
 import unicodedata
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+(?:[.,][0-9]+)?")
-_SENTENCE_RE = re.compile(r"(?<=[.;:!?])\s+(?=[A-ZÁÉÍÓÚÑ0-9¿¡•\-])")
+_SENTENCE_RE = re.compile(r"(?<=[.;!?])\s+(?=[A-ZÁÉÍÓÚÑ0-9¿¡•\-])")
 
 STOPWORDS = frozenset(
     """

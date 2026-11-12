@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import logging
 import time
 from dataclasses import dataclass, field
@@ -21,14 +22,26 @@ from .embeddings import (
 )
 from .extraction import PdfExtractionError, extract_pdf
 from .models import Chunk, DocumentInfo, RetrievalMetrics
-from .text import tokenize
+from .text import normalize, split_sentences, tokenize
 
 logger = logging.getLogger(__name__)
 
 INDEX_FILE = "index.json"
-INDEX_VERSION = 1
+INDEX_VERSION = 2  # v2: table rows, chunk kind/label, document code/version/references
+COMPATIBLE_VERSIONS = {1, 2}
 RRF_K = 60
 PREFIX_LEN = 5
+HISTORY_KINDS = {"metadata_row", "changelog_row"}
+HISTORY_TERMS = set(tokenize(
+    "version versiones vigencia vigente actualizacion actualizo actualizada modificacion "
+    "modifico historial emision codigo responsable clasificacion autorizo"
+))
+# A history question must also name a document ("vigencia de la política ..."),
+# so "vigencia de un vale de tienda" does not open the cover-metadata rows.
+DOCUMENT_WORDS = ("politica", "manual", "procedimiento", "documento", "faq", "preguntas frecuentes", "lineamiento")
+DEFINITIONAL_RE = re.compile(r"\bqu[eé]\s+(?:es|son|significa|significan|quiere decir)\b", re.IGNORECASE)
+DEFINITION_BOOST = 2.0
+EXPANSION_WEIGHT = 0.5  # definition-derived terms count half as much as literal ones
 
 
 class IndexNotFoundError(FileNotFoundError):
@@ -42,6 +55,51 @@ class SearchHit:
     coverage: float
     bm25_score: float = 0.0
     embedding_similarity: float | None = None
+
+
+_DEFINITION_ITEM = re.compile(r"^\s*([^:•]{3,80}):\s*(.+)$")
+_EXAMPLES = re.compile(r"(?:tales como|por ejemplo|como|:)\s+([^.;]+)", re.IGNORECASE)
+_LIST_SPLIT = re.compile(r",|\s+y\s+|\s+o\s+")
+
+
+def definition_expansions(
+    chunks: list[Chunk], bm25: BM25Index | None = None, max_df_ratio: float = 0.05
+) -> dict[str, set[str]]:
+    """Map example words to the term that the documents define with them.
+
+    Only sections titled "Definiciones" are used and only explicit example lists
+    ("tales como A, B y C", "por ejemplo ...", "...: A, B, C"). Example items of
+    more than four words are ignored, and only example words that are rare in the
+    corpus (document frequency <= ``max_df_ratio``) are expanded, so generic words
+    such as "producto" never trigger an expansion. Nothing comes from outside the
+    corpus.
+    """
+    out: dict[str, set[str]] = {}
+    max_df = max(1, int(max_df_ratio * len(chunks)))
+
+    def rare(token: str) -> bool:
+        if bm25 is None:
+            return True
+        return sum(1 for f in bm25.doc_freqs if token in f) <= max_df
+
+    for chunk in chunks:
+        if chunk.kind != "text" or "definicion" not in normalize(chunk.section or ""):
+            continue
+        for item in split_sentences(chunk.text.replace("•", " ")):
+            m = _DEFINITION_ITEM.match(item)
+            if not m:
+                continue
+            term_tokens = set(tokenize(m.group(1)))
+            if not term_tokens:
+                continue
+            for ex in _EXAMPLES.finditer(m.group(2)):
+                for example in _LIST_SPLIT.split(ex.group(1)):
+                    words = tokenize(example)
+                    if 0 < len(example.split()) <= 4:
+                        for w in words:
+                            if w not in term_tokens and rare(w):
+                                out.setdefault(w, set()).update(term_tokens)
+    return out
 
 
 def _index_text(chunk: Chunk) -> str:
@@ -80,6 +138,16 @@ class PolicyIndex:
         for term, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
             if len(term) >= PREFIX_LEN:
                 self._prefix.setdefault(term[:PREFIX_LEN], term)
+        self.expansions = definition_expansions(self.chunks, self.bm25)
+        self._by_prefix: dict[str, set[str]] = {}
+        for term in counts:
+            if len(term) >= PREFIX_LEN and not term[:1].isdigit():
+                self._by_prefix.setdefault(term[:PREFIX_LEN], set()).add(term)
+        regular = {t for toks, c in zip(self._tokens, self.chunks) if c.kind not in HISTORY_KINDS for t in toks}
+        self._history_only_terms = {t for toks in self._tokens for t in toks} - regular
+        self._definition_chunks = {
+            i for i, c in enumerate(self.chunks) if "definicion" in normalize(c.section or "")
+        }
 
     # ------------------------------------------------------------------ build
     @classmethod
@@ -171,15 +239,22 @@ class PolicyIndex:
                 f"No existe el índice {target}. Ejecuta: python -m app.rag build --pdf-dir <carpeta>"
             )
         payload = json.loads(target.read_text(encoding="utf-8"))
-        if payload.get("version") != INDEX_VERSION:
-            raise ValueError(f"Versión de índice incompatible: {payload.get('version')}")
+        version = payload.get("version")
+        if version not in COMPATIBLE_VERSIONS:
+            raise ValueError(f"Versión de índice incompatible: {version}")
+        warnings = list(payload.get("warnings", []))
+        if version != INDEX_VERSION:
+            warnings.append(
+                f"Índice v{version} construido con un extractor anterior (sin filas de tabla ni "
+                "metadatos de documento); reconstrúyelo con: python -m app.rag build"
+            )
         return cls(
             chunks=[Chunk(**c) for c in payload["chunks"]],
             documents={k: DocumentInfo(**v) for k, v in payload["documents"].items()},
             embeddings=payload.get("embeddings"),
             embed_model=payload.get("embed_model"),
             built_at=payload.get("built_at", ""),
-            warnings=payload.get("warnings", []),
+            warnings=warnings,
         )
 
     # --------------------------------------------------------------- search
@@ -191,6 +266,27 @@ class PolicyIndex:
             out.append(t)
         return out
 
+    def query_alternatives(self, q_tokens: list[str]) -> dict[str, set[str]]:
+        """Soft matches per query term: corpus-defined expansions plus indexed
+        terms sharing the first 5 characters ("devolv" ~ "devolu")."""
+        out: dict[str, set[str]] = {}
+        for t in q_tokens:
+            alts = set(self.expansions.get(t, ()))
+            if len(t) >= PREFIX_LEN and not t[:1].isdigit():
+                alts |= self._by_prefix.get(t[:PREFIX_LEN], set()) - {t}
+            if alts:
+                out[t] = alts
+        return out
+
+    def history_question(self, query: str, q_tokens: list[str]) -> bool:
+        norm_query = normalize(query)
+        return bool(set(q_tokens) & HISTORY_TERMS) and any(w in norm_query for w in DOCUMENT_WORDS)
+
+    def unseen_terms(self, query: str, q_tokens: list[str]) -> set[str]:
+        """Terms that only occur in chunks excluded from this query's search."""
+        return set() if self.history_question(query, q_tokens) else self._history_only_terms
+
+
     def search(
         self,
         query: str,
@@ -201,7 +297,31 @@ class PolicyIndex:
         t0 = time.perf_counter()
         metrics = RetrievalMetrics()
         q_tokens = self.query_tokens(query)
-        bm25_hits = self.bm25.search(q_tokens, candidate_pool)
+        # Expand with terms the documents themselves define ("Electrodomésticos ...:
+        # tales como licuadoras ..."), so a question about "licuadora" also reaches
+        # the row "Electrodomésticos y electrónicos menores | Plazo: 30 días".
+        alternatives = self.query_alternatives(q_tokens)
+        expanded = q_tokens + sorted({x for alts in alternatives.values() for x in alts} - set(q_tokens))
+        extra = set(expanded) - set(q_tokens)
+        bm25_hits = self.bm25.search(
+            expanded, candidate_pool, {t: EXPANSION_WEIGHT for t in extra} if extra else None
+        )
+        # Cover metadata and change-log rows only answer questions about document
+        # history (version, vigencia, actualización...). Otherwise their dates
+        # ("1 de agosto de 2023") would match unrelated questions ("ventas de agosto").
+        history_ok = self.history_question(query, q_tokens)
+
+        def allowed(i: int) -> bool:
+            return history_ok or self.chunks[i].kind not in HISTORY_KINDS
+
+        bm25_hits = [(i, sc) for i, sc in bm25_hits if allowed(i)]
+        unseen = self.unseen_terms(query, q_tokens)
+        # "¿Qué es SIGMA?": prefer the documents' own "Definiciones" sections.
+        if DEFINITIONAL_RE.search(query) and self._definition_chunks:
+            bm25_hits = sorted(
+                ((i, sc * DEFINITION_BOOST if i in self._definition_chunks else sc) for i, sc in bm25_hits),
+                key=lambda kv: (-kv[1], kv[0]),
+            )
         bm25_scores = dict(bm25_hits)
 
         sims: list[float] | None = None
@@ -231,7 +351,9 @@ class PolicyIndex:
             fused = {i: s for i, s in bm25_hits}
         else:
             metrics.retrieval_mode = "hybrid"
-            emb_rank = sorted(range(len(sims)), key=lambda i: (-sims[i], i))[:candidate_pool]
+            emb_rank = [
+                i for i in sorted(range(len(sims)), key=lambda i: (-sims[i], i)) if allowed(i)
+            ][:candidate_pool]
             fused = {}
             for rank, (i, _) in enumerate(bm25_hits):
                 fused[i] = fused.get(i, 0.0) + 1.0 / (RRF_K + rank + 1)
@@ -243,7 +365,7 @@ class PolicyIndex:
             SearchHit(
                 chunk=self.chunks[i],
                 score=round(score, 6),
-                coverage=round(self.bm25.coverage(q_tokens, i), 4),
+                coverage=round(self.bm25.coverage(q_tokens, i, alternatives, unseen, EXPANSION_WEIGHT), 4),
                 bm25_score=round(bm25_scores.get(i, 0.0), 4),
                 embedding_similarity=None if sims is None else round(sims[i], 4),
             )

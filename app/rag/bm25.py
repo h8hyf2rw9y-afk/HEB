@@ -26,7 +26,9 @@ class BM25Index:
     def term_idf(self, term: str) -> float:
         return self.idf.get(term, self.unseen_idf)
 
-    def score(self, query_tokens: list[str], doc_index: int) -> float:
+    def score(
+        self, query_tokens: list[str], doc_index: int, weights: dict[str, float] | None = None
+    ) -> float:
         freqs = self.doc_freqs[doc_index]
         dl = self.doc_lens[doc_index]
         total = 0.0
@@ -35,20 +37,48 @@ class BM25Index:
             if not tf:
                 continue
             denom = tf + self.k1 * (1 - self.b + self.b * dl / (self.avgdl or 1.0))
-            total += self.idf[term] * tf * (self.k1 + 1) / denom
+            w = weights.get(term, 1.0) if weights else 1.0
+            total += w * self.idf[term] * tf * (self.k1 + 1) / denom
         return total
 
-    def search(self, query_tokens: list[str], top_n: int) -> list[tuple[int, float]]:
-        scored = [(i, self.score(query_tokens, i)) for i in range(self.n_docs)]
+    def search(
+        self, query_tokens: list[str], top_n: int, weights: dict[str, float] | None = None
+    ) -> list[tuple[int, float]]:
+        scored = [(i, self.score(query_tokens, i, weights)) for i in range(self.n_docs)]
         scored = [s for s in scored if s[1] > 0]
         scored.sort(key=lambda s: (-s[1], s[0]))
         return scored[:top_n]
 
-    def coverage(self, query_tokens: list[str], doc_index: int) -> float:
-        """IDF-weighted share of query terms that appear in the given chunk."""
+    def coverage(
+        self,
+        query_tokens: list[str],
+        doc_index: int,
+        alternatives: dict[str, set[str]] | None = None,
+        unseen: set[str] | None = None,
+        alternative_weight: float = 1.0,
+    ) -> float:
+        """IDF-weighted share of query terms that appear in the given chunk.
+
+        A query term matched only through one of its ``alternatives`` (soft
+        matches: corpus definitions, shared prefix) earns ``alternative_weight``
+        of its IDF instead of the full value.
+        """
         terms = set(query_tokens)
         if not terms:
             return 0.0
-        total = sum(self.term_idf(t) for t in terms)
-        hit = sum(self.term_idf(t) for t in terms if self.doc_freqs[doc_index].get(t))
+        freqs = self.doc_freqs[doc_index]
+        alternatives = alternatives or {}
+        unseen = unseen or set()
+
+        def idf(t: str) -> float:
+            # ``unseen`` terms exist only in chunks excluded from this search.
+            return self.unseen_idf if t in unseen else self.term_idf(t)
+
+        total = sum(idf(t) for t in terms)
+        hit = 0.0
+        for t in terms:
+            if freqs.get(t):
+                hit += idf(t)
+            elif any(freqs.get(a) for a in alternatives.get(t, ())):
+                hit += alternative_weight * idf(t)
         return hit / total if total else 0.0

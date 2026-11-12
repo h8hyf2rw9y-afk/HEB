@@ -24,6 +24,9 @@ class Chunk(BaseModel):
     page: int = Field(ge=1, description="1-based page number")
     section: str | None = None
     text: str
+    # Internal metadata (not part of the public Evidence contract).
+    kind: str = "text"  # text | table_row | metadata_row | changelog_row
+    label: str | None = None  # first cell of a table row
 
 
 class Evidence(BaseModel):
@@ -51,6 +54,11 @@ class DocumentInfo(BaseModel):
     document: str
     title: str | None = None
     pages: int = 0
+    code: str | None = Field(default=None, description="Document code found in the text, e.g. PRO-SAC-021")
+    version: str | None = None
+    references: list[str] = Field(
+        default_factory=list, description="Other document codes cited in the text"
+    )
     effective_date: str | None = Field(
         default=None, description="ISO date found in the text (e.g. 'vigente a partir del ...')"
     )

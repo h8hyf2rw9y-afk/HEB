@@ -99,18 +99,69 @@ class _Sentence:
     topic: set[str]
     quantities: dict[str, set[str]]
     polarity: int
+    label: set[str] | None = None  # topic tokens of a table row's first cell
 
 
-def _relevant_sentences(question: str, hits: list[SearchHit]) -> list[_Sentence]:
-    q_topic = topic_tokens(question)
+# Cover metadata and change-log rows legitimately differ between versions/documents.
+_IGNORED_KINDS = {"metadata_row", "changelog_row"}
+
+
+def _prefixes(tokens: set[str], n: int = 5) -> set[str]:
+    return {t[:n] for t in tokens}
+
+
+def _relevant_sentences(
+    question: str, hits: list[SearchHit], extra_terms: set[str] | None = None
+) -> list[_Sentence]:
+    # 5-char prefixes so "devolver" (devolv) matches "devolución" (devolu); extra
+    # terms are the corpus-defined expansions of the query (e.g. licuadora ->
+    # electrodomésticos).
+    q_topic = _prefixes(topic_tokens(question) | (extra_terms or set()))
     out: list[_Sentence] = []
     for hit in hits:
-        for sent in split_sentences(hit.chunk.text):
+        chunk = hit.chunk
+        if chunk.kind in _IGNORED_KINDS:
+            continue
+        # A table row is one atomic statement ("Tipo: X | Plazo: 30 días | ...").
+        units = [chunk.text] if chunk.kind == "table_row" else split_sentences(chunk.text)
+        label = _label_tokens(chunk.label) if chunk.kind == "table_row" and chunk.label else None
+        for sent in units:
             topic = topic_tokens(sent)
-            if q_topic and not (topic & q_topic):
+            if q_topic and not (_prefixes(topic) & q_topic):
                 continue
-            out.append(_Sentence(hit, sent, topic, extract_quantities(sent), polarity(sent)))
+            out.append(_Sentence(hit, sent, topic, extract_quantities(sent), polarity(sent), label))
     return out
+
+
+_NEGATED = re.compile(r"\b(?:no|sin|excepto|salvo)\s+(\w+)")
+
+
+def _label_tokens(label: str) -> set[str]:
+    """Row label tokens minus negated ones: "1 día (solo perecederos no lácteos)"
+    is about perecederos, explicitly *not* about lácteos."""
+    negated = set(tokenize(" ".join(_NEGATED.findall(normalize(label)))))
+    return topic_tokens(label) - negated
+
+
+def _overlap(a: set[str], b: set[str]) -> float:
+    return len(a & b) / min(len(a), len(b)) if a and b else 0.0
+
+
+def _same_subject(s1: _Sentence, s2: _Sentence, threshold: float) -> bool:
+    """Do two statements talk about the same thing?
+
+    Prose vs prose: token Jaccard >= threshold.
+    When a table row is involved, the row's label (e.g. "Electrodomésticos y
+    electrónicos menores") must be mentioned by the other statement, so that
+    "15 días" for appliances is never compared with the "Abarrotes: 30 días" row;
+    then the overlap coefficient (robust to a long sentence vs a short row) is used.
+    """
+    if s1.label is None and s2.label is None:
+        return _jaccard(s1.topic, s2.topic) >= threshold
+    for row, other in ((s1, s2), (s2, s1)):
+        if row.label is not None and not (row.label & other.topic):
+            return False
+    return _overlap(s1.topic, s2.topic) >= threshold
 
 
 def _same_location(a: SearchHit, b: SearchHit) -> bool:
@@ -145,6 +196,22 @@ def _unique_target(phrase: str, documents: dict[str, DocumentInfo]) -> DocumentI
     return matched[0] if len(matched) == 1 else None
 
 
+# "... prevalece (siempre) la política o el procedimiento ..." : the source declares
+# itself subordinate to the normative documents it references.
+_SUBORDINATE_RE = re.compile(
+    r"\bprevalecer?[aá]?n?\s+(?:siempre\s+)?(?:(?:la|el|los|las)\s+)?(?:politica|procedimiento|documento normativo)"
+)
+_NORMATIVE_CODE = re.compile(r"^(?:POL|PRO)-")
+
+
+def _is_normative(info: DocumentInfo) -> bool:
+    """Policy or procedure, judged only from the code/title printed in the document."""
+    if info.code and _NORMATIVE_CODE.match(info.code):
+        return True
+    title = normalize(info.title or "")
+    return title.startswith(("politica", "procedimiento"))
+
+
 def resolve_precedence(
     doc_a: str, doc_b: str, documents: dict[str, DocumentInfo]
 ) -> tuple[str | None, str]:
@@ -154,7 +221,10 @@ def resolve_precedence(
     - document X says it replaces Y, and the phrase identifies exactly one indexed
       document (Y); or
     - a precedence rule ("en caso de conflicto prevalece ...") that identifies
-      exactly one of the two documents.
+      exactly one of the two documents; or
+    - a document states that "la política o el procedimiento" prevails over it
+      (e.g. a FAQ), the other document is a policy/procedure according to its own
+      printed code (POL-/PRO-) or title, and the first document cites that code.
     Effective dates are reported but never decide on their own, and an ambiguous
     phrase (matching both versions or several documents) leaves the conflict
     unresolved.
@@ -179,6 +249,16 @@ def resolve_precedence(
             if _mentions(phrase, a) or _mentions(phrase, b):
                 ambiguous.append(f'{source.document}: "{phrase}"')
 
+    for subordinate, normative in ((a, b), (b, a)):
+        for phrase in subordinate.precedence_statements:
+            if _SUBORDINATE_RE.search(normalize(phrase)) and _is_normative(normative) and (
+                normative.code and normative.code in subordinate.references
+            ):
+                return normative.document, (
+                    f'{subordinate.document} indica: "{phrase}" y cita {normative.code} '
+                    f"({normative.title or normative.document}), que es una política o procedimiento."
+                )
+
     basis = "Ningún documento establece explícitamente y sin ambigüedad cuál prevalece."
     if ambiguous:
         basis += " Frases de reemplazo/precedencia ambiguas: " + "; ".join(ambiguous) + "."
@@ -195,8 +275,9 @@ def detect_conflicts(
     *,
     numeric_similarity: float = 0.3,
     modality_similarity: float = 0.5,
+    extra_terms: set[str] | None = None,
 ) -> list[PolicyConflict]:
-    sentences = _relevant_sentences(question, hits)
+    sentences = _relevant_sentences(question, hits, extra_terms)
     conflicts: list[PolicyConflict] = []
     seen: set[tuple] = set()
 
@@ -212,14 +293,13 @@ def detect_conflicts(
     for s1, s2 in combinations(sentences, 2):
         if _same_location(s1.hit, s2.hit):
             continue
-        sim = _jaccard(s1.topic, s2.topic)
         found: list[tuple[str, str, set[str], set[str]]] = []
-        if sim >= numeric_similarity:
+        if _same_subject(s1, s2, numeric_similarity):
             for unit in s1.quantities.keys() & s2.quantities.keys():
                 v1, v2 = s1.quantities[unit], s2.quantities[unit]
                 if v1.isdisjoint(v2):
                     found.append(("numeric", unit, v1, v2))
-        if sim >= modality_similarity and s1.polarity * s2.polarity == -1:
+        if s1.polarity * s2.polarity == -1 and _same_subject(s1, s2, modality_similarity):
             found.append(("modality", "permitido/prohibido", set(), set()))
 
         for kind, topic, v1, v2 in found:
