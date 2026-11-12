@@ -300,7 +300,7 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
             SELECT {aggregation} AS valor
             FROM read_csv_auto(?) v JOIN read_csv_auto(?) t ON v.tienda_id = t.tienda_id
             {join}
-            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE){store_filter}
+            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE){store_filter}{sku_filter}
         """
     with duckdb.connect() as con:
         rows = con.execute(sql, params).fetchall()
