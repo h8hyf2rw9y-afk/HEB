@@ -17,7 +17,7 @@ DATA_WORDS = re.compile(
     r"\b(venta|ventas|vendi|vendio|vendimos|vendieron|facturacion|ingresos|"
     r"unidades|producto|productos|sku|inventario|existencia|existencias|stock|"
     r"reorden|surtir|agotad[oa]s?|ticket|tickets|incidencias|mesa de servicio|"
-    r"tiendas?|sucursales?|canal|categorias?|descuento|descuentos)\b"
+    r"canal|categorias?|descuento|descuentos)\b"
 )
 POLICY_HINT = re.compile(
     r"\b(politica|procedimiento|manual|devolucion|devolver|reembolso|"
@@ -39,7 +39,7 @@ def plain(text: str) -> str:
 
 def looks_like_data(question: str) -> bool:
     q = plain(question)
-    if POLICY_HINT.search(q) and not re.search(r"\b(cuant[oa]s?|ventas|vendimos|facturacion|stock|inventario|tickets)\b", q):
+    if POLICY_HINT.search(q) and not re.search(r"\b(ventas|vendimos|vendio|facturacion|stock|inventario|tickets)\b", q):
         return False
     return bool(DATA_WORDS.search(q) and (ANALYTIC_HINT.search(q) or
         re.search(r"\b(inventario|existencias|stock|tickets|facturacion|ventas)\b", q)))
