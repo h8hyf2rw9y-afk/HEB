@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from app.data.catalog import build_catalog
 from app.api.assistant_chat import classify_assistant_question, assistant_answer, is_general_conversation
 from app.api.business_intents import route_business_question
+from app.api.return_intents import route_returns, check_return_evidence
 from app.llm import GroundedWriter, LLMSettings
 from app.llm.general import generate_general_answer
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
@@ -25,6 +26,7 @@ WRITER = GroundedWriter(LLM_SETTINGS)
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     conversation_id: str | None = None
+    previous_question: str | None = Field(default=None, max_length=4000)
 
 
 class Metrics(BaseModel):
@@ -96,6 +98,50 @@ def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(
             answer="Escribe una pregunta para continuar.",
             status="needs_clarification",
+        )
+    # Returns and receipts require policy-specific routing. The previous question
+    # is explicit client-supplied context (not a server-side remembered session).
+    return_route = route_returns(question, request.previous_question)
+    if return_route is not None:
+        if return_route.kind == "needs_context":
+            return ChatResponse(
+                answer=("¿Te refieres al ticket de compra para devolver un producto "
+                        "o a un ticket de soporte de la Mesa de Servicio?"),
+                status="needs_clarification",
+                metrics=Metrics(answer_mode="needs_context",
+                                latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+            )
+        result = search_policies(PolicySearchRequest(query=return_route.query, top_k=5))
+        evidence = [item.to_http_evidence() for item in result.evidence]
+        if not check_return_evidence(return_route.kind, status=result.status,
+                                     answer=result.answer, evidence=evidence):
+            message = (
+                "No encontré una sección suficientemente pertinente del procedimiento "
+                "general de devoluciones. ¿Qué tipo de producto desea devolver el cliente "
+                "y tiene ticket de compra?"
+                if return_route.kind == "general_process" else
+                "No pude comprobar con evidencia pertinente las condiciones para devolver "
+                "sin ticket de compra. Consulta la política vigente de devoluciones "
+                "antes de autorizarla."
+            )
+            return ChatResponse(
+                answer=message, status="needs_clarification",
+                metrics=Metrics(answer_mode="needs_context",
+                                latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+            )
+        # The exact policy passage is displayed: generative rewriting is optional
+        # elsewhere, but an incorrect rewiring of a receipt would be unacceptable.
+        return ChatResponse(
+            answer=result.answer, status="answered", evidence=evidence,
+            conflicts=[item.model_dump() for item in result.conflicts],
+            metrics=Metrics(
+                answer_mode="grounded_policy", retrieval_mode=result.metrics.retrieval_mode,
+                embedding_calls=result.metrics.embedding_calls,
+                embedding_input_tokens=result.metrics.embedding_input_tokens,
+                embedding_latency_ms=result.metrics.embedding_latency_ms,
+                warnings=result.metrics.warnings,
+                latency_ms=round((time.perf_counter() - start) * 1000, 2),
+            ),
         )
     # Conversational/meta questions are not business data or policy evidence.
     # A connection question probes Ollama live; it must never claim connectivity
