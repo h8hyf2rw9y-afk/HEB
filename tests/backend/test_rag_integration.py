@@ -72,7 +72,8 @@ def test_structured_question_does_not_call_rag(monkeypatch):
 
     monkeypatch.setattr(main, "search_policies", unexpected)
     data = client.post("/chat", json={"question": "¿Cuánto vendimos en agosto?"}).json()
-    assert data["status"] == "insufficient_data"
+    assert data["status"] == "answered"
+    assert data["evidence"][0]["source"] == "ventas.csv"
 
 
 def test_rag_health_uses_shared_configuration(monkeypatch):
