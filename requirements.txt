@@ -1,0 +1,8 @@
+# Local-first H-E-B assessment dependencies (Python 3.11+)
+fastapi>=0.110,<1
+uvicorn>=0.30,<1
+streamlit>=1.35,<2
+duckdb>=1.1,<2
+httpx>=0.27,<1
+PyMuPDF>=1.24,<2
+pytest>=8,<10
