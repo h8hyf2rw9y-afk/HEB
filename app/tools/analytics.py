@@ -24,6 +24,16 @@ POLICY_HINT = re.compile(
     r"merma|caducidad|caducado|faq|que hacer|como actuar|debo hacer|"
     r"se permite|puedo|plazo|regla|norma|protocolo)\b"
 )
+# Policy questions mentioning operational terms must never be mistaken for CSV metrics.
+# Keep these safeguards narrow: ticket means sales receipt in a returns policy,
+# inventory counting frequency is an operating procedure, and merchandise
+# holding time after recording shrinkage is a policy question.
+POLICY_QUESTION_GUARDS = (
+    re.compile(r"\b(devolucion(?:es)?|devolver|reembolso)\b.*\bsin ticket\b"),
+    re.compile(r"\b(frecuencia|cada cuanto|periodicidad)\b.*\b(cuenta|conteo|contar|inventario)\b"),
+    re.compile(r"\b(cuanto tiempo|plazo)\b.*\b(permanecer|mermado|merma)\b"),
+)
+
 ANALYTIC_HINT = re.compile(
     r"\b(cuant[oa]s?|total|sum[ao]|mayor|menor|mas|menos|"
     r"mejor|peor|ranking|compar|promedio|por tienda|por sucursal|"
@@ -39,6 +49,8 @@ def plain(text: str) -> str:
 
 def looks_like_data(question: str) -> bool:
     q = plain(question)
+    if any(pattern.search(q) for pattern in POLICY_QUESTION_GUARDS):
+        return False
     if POLICY_HINT.search(q) and not re.search(r"\b(ventas|vendimos|vendio|facturacion|stock|inventario|tickets)\b", q):
         return False
     return bool(DATA_WORDS.search(q) and (ANALYTIC_HINT.search(q) or
