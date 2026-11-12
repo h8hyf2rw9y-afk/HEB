@@ -19,6 +19,7 @@ STOPWORDS = frozenset(
     y ya yo cual es hacer hace debo debe deben esta estoy segun sea son sus
     politica politicas
     puedo podemos tengo tenemos tarda tardan tardar necesito necesita quiero saber dime explica
+    durante mediante hacia tras
     hago hacemos existe existen aplica cuanta cuantas quien quienes cual cuales donde cuando como""".split()
 )
 # "política" and question fillers ("puedo", "tengo", "tarda"...) carry no topical

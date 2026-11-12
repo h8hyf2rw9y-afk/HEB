@@ -32,7 +32,7 @@ class BM25Index:
         freqs = self.doc_freqs[doc_index]
         dl = self.doc_lens[doc_index]
         total = 0.0
-        for term in set(query_tokens):
+        for term in sorted(set(query_tokens)):
             tf = freqs.get(term, 0)
             if not tf:
                 continue
@@ -63,7 +63,7 @@ class BM25Index:
         matches: corpus definitions, shared prefix) earns ``alternative_weight``
         of its IDF instead of the full value.
         """
-        terms = set(query_tokens)
+        terms = sorted(set(query_tokens))  # fixed order: float sums are deterministic
         if not terms:
             return 0.0
         freqs = self.doc_freqs[doc_index]
