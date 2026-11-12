@@ -47,7 +47,7 @@ def route_returns(question: str, previous_question: str | None = None) -> Return
         return ReturnRoute("needs_context")
 
     if receipt and (has_return or (short and previously_returns)):
-        return ReturnRoute("no_receipt", "¿Puedo aceptar una devolución sin ticket de compra?")
+        return ReturnRoute("no_receipt", "¿Puedo aceptar una devolución sin ticket?")
 
     if has_return and _GENERIC_PROCEDURE.search(q):
         # The generic rules come from the governing procedure, not FAQ P15
@@ -70,13 +70,16 @@ def check_return_evidence(kind: str, *, status: str, answer: str, evidence: list
     if kind == "no_receipt":
         return (
             "faq_gerentes_de_tienda.pdf" in sources
-            and "sin ticket" in text
+            and "[faq_gerentes_de_tienda.pdf," in answer
             and "vale de tienda" in text
             and "identificacion oficial" in text
+            and "manual_apertura_y_cierre_tienda.pdf" not in answer
         )
     if kind == "general_process":
         return (
             "procedimiento_devoluciones.pdf" in sources
+            and "[procedimiento_devoluciones.pdf," in answer
+            and "faq_gerentes_de_tienda.pdf" not in answer
             and bool(re.search(r"\b(?:devoluc\w*|devolver|cambio)\b", text))
         )
     return False
