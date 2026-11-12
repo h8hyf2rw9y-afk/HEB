@@ -102,6 +102,27 @@ def test_no_files_abstains(tmp_path: Path):
     assert a.status == "insufficient_data"
 
 
+
+
+def test_specific_store_does_not_mix_totals(data: Path):
+    a = answer_data_question("¿Cuánto vendimos en la tienda Norte en junio?", data)
+    assert a.status == "answered"
+    assert "Norte" in a.answer
+    assert "$250.00 MXN" in a.answer
+    assert "$350.00 MXN" not in a.answer
+
+
+def test_specific_store_by_code(data: Path):
+    a = answer_data_question("¿Cuánto vendimos en la T02 en junio?", data)
+    assert a.status == "answered"
+    assert "$100.00 MXN" in a.answer
+
+
+def test_unknown_store_abstains(data: Path):
+    a = answer_data_question("¿Cuánto vendimos en T99 en junio?", data)
+    assert a.status == "insufficient_data"
+    assert a.evidence == []
+
 def test_chat_sales_real_data():
     result = TestClient(app).post("/chat", json={"question": "¿Cuánto vendimos en agosto?"})
     assert result.status_code == 200
