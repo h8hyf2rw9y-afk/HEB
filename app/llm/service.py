@@ -63,6 +63,15 @@ class GroundedWriter:
         if status not in REWRITABLE_STATUSES:
             fallback.fallback_reason = f"estado_{status}_no_se_redacta"
             return fallback
+        # Short, complete deterministic answers have no useful prose to improve.
+        # Avoid spending seconds of CPU on trivial results such as "Total: 0 tickets."
+        if (
+            kind == "datos" and not conflicts
+            and len(verified_answer.split()) <= 12
+            and len(verified_answer.splitlines()) <= 2
+        ):
+            fallback.fallback_reason = "redaccion_innecesaria"
+            return fallback
         if has_injection(verified_answer):
             # Suspicious instructions inside the evidence: do not expose them to the model.
             fallback.fallback_reason = "evidencia_con_instrucciones_sospechosas"
