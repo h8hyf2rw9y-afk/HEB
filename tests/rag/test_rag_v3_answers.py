@@ -147,6 +147,8 @@ def test_conflict_answer_keeps_both_sides_and_marks_the_non_prevailing_one(real)
     assert "30 días naturales" in bullets[0] and "procedimiento_devoluciones.pdf" in bullets[0]
     assert any("15 días" in b and "no prevalece según la fuente" in b for b in bullets)
     assert "⚠️ Contradicción entre documentos" in ans.answer
+    assert "P17." not in ans.answer
+    assert "autoriza hasta 500 pesos" not in ans.answer
 
 
 def test_sibling_rows_are_pruned_only_when_the_entity_row_exists():

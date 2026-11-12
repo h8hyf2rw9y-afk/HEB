@@ -329,7 +329,9 @@ def compose_answer(
     superseded = {
         cl.document for c in conflicts if c.preferred_document for cl in c.claims if cl.document != c.preferred_document
     }
-    conflict_ids = {(cl.document, cl.page) for c in conflicts for cl in c.claims}
+    # Conflict claims identify a sentence within a passage, not an entire PDF page.
+    # The FAQ places unrelated answers P15 and P17 on the same page.
+    conflict_claims = [(cl.document, cl.sentence) for c in conflicts for cl in c.claims]
     primary = ranked[0]
     if primary.hit.chunk.document in superseded:
         primary = next((a for a in ranked if a.hit.chunk.document not in superseded), primary)
@@ -353,7 +355,10 @@ def compose_answer(
         if a is primary or len(chosen) > max_supporting:
             continue
         c = a.hit.chunk
-        if (c.document, c.page) in conflict_ids:
+        if any(
+            c.document == document and sentence and normalize(sentence) in normalize(c.text)
+            for document, sentence in conflict_claims
+        ):
             chosen.append(a)
             continue
         if q.definitional and not is_definition(a):
