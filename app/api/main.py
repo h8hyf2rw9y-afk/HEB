@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.data.catalog import build_catalog
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
+from app.tools.analytics import answer_data_question, looks_like_data
 
 app = FastAPI(title="HEB AI Assistant", version="0.2.0")
 CATALOG = build_catalog(Path("candidatos/datos"))
@@ -83,11 +84,21 @@ def chat(request: ChatRequest) -> ChatResponse:
             answer="Escribe una pregunta para continuar.",
             status="needs_clarification",
         )
-    if not _POLICY_TERMS.search(question):
+    # Data queries use fixed, parameterized SQL. Everything else goes to the RAG.
+    # This also fixes previously unreachable policy questions such as SIGMA.
+    if looks_like_data(question):
+        try:
+            result = answer_data_question(question)
+        except Exception:
+            return ChatResponse(
+                answer="No pude consultar los CSV en este momento. Verifica que DuckDB esté instalado y los archivos estén disponibles.",
+                status="error",
+                metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+            )
         return ChatResponse(
-            answer="Todavía no está disponible la consulta conversacional de datos estructurados. "
-                   "Puedes consultar políticas de devoluciones, mermas y procedimientos.",
-            status="insufficient_data",
+            answer=result.answer,
+            status=result.status,
+            evidence=result.evidence,
             metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
         )
 
