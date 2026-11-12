@@ -14,7 +14,7 @@ from app.rag.interface import PolicySearchRequest, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
 
 app = FastAPI(title="HEB AI Assistant", version="0.2.0")
-CATALOG = build_catalog(Path("data/raw"))
+CATALOG = build_catalog(Path("candidatos/datos"))
 
 # Explicit, conservative routing: structured sales questions are not sent to policy RAG.
 _POLICY_TERMS = re.compile(
