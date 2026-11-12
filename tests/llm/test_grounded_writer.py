@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from llm_fakes import make_writer, ollama_reply  # first: also puts the repo root on sys.path
 
 from app.llm.ollama_client import LLMBadResponse, LLMEmptyResponse, LLMTimeout, LLMUnavailable, OllamaChatClient
 from app.llm.prompts import SYSTEM_PROMPT, build_messages
-from conftest import ollama_reply
+
+
+@pytest.fixture
+def writer_factory():
+    return make_writer
+
 
 A1_VERIFIED = """Ventas netas por tienda (agosto de 2026), mayor a menor:
 1. Tienda Valle Norte: $2,163,062.36 MXN

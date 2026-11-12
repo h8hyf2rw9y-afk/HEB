@@ -6,20 +6,52 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import httpx
 import pytest
+from llm_fakes import FakeOllama, ollama_reply  # first: also puts the repo root on sys.path
 
 from app.api import main
 from app.llm.config import LLMSettings
 from app.llm.ollama_client import OllamaChatClient
 from app.llm.service import GroundedWriter
-from conftest import FakeOllama, ollama_reply
 
 pytest.importorskip("duckdb")
 from fastapi.testclient import TestClient  # noqa: E402
 
 client = TestClient(main.app)
+ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(scope="module")
+def policy_index_dir(tmp_path_factory) -> Path:
+    """Build the RAG index from the 4 exercise PDFs into a temp dir (data/rag_index is
+    git-ignored, so CI has no prebuilt index)."""
+    from app.rag.config import RagSettings
+    from app.rag.extraction import discover_pdfs
+    from app.rag.index import PolicyIndex
+
+    pdfs = discover_pdfs(ROOT / "candidatos" / "politicas")
+    if len(pdfs) != 4:
+        pytest.skip("candidatos/politicas no disponible")
+    target = tmp_path_factory.mktemp("rag_index")
+    PolicyIndex.build(pdfs, RagSettings(embeddings="off")).save(target)
+    return target
+
+
+@pytest.fixture
+def policy_index(policy_index_dir, monkeypatch):
+    """Point the shared retriever used by /chat at the temp index for one test."""
+    from app.rag import service
+
+    monkeypatch.setenv("HEB_RAG_INDEX_DIR", str(policy_index_dir))
+    monkeypatch.setenv("HEB_RAG_EMBEDDINGS", "off")
+    service.reset_retriever()
+    yield policy_index_dir
+    service.reset_retriever()
+
+
 CONTRACT_KEYS = {"answer", "evidence", "conflicts", "metrics", "status"}
 LEGACY_METRIC_KEYS = {"input_tokens", "output_tokens", "total_tokens", "llm_calls", "latency_ms", "retrieval_mode",
                       "embedding_calls", "embedding_input_tokens", "embedding_latency_ms", "warnings"}
@@ -62,7 +94,7 @@ def test_data_answer_rewritten_keeps_evidence_and_counts_tokens(monkeypatch):
     assert len(fake.requests) == 1
 
 
-def test_policy_answer_rewritten_keeps_citations_and_conflicts(monkeypatch):
+def test_policy_answer_rewritten_keeps_citations_and_conflicts(monkeypatch, policy_index):
     def behaviour(req):
         body = req["messages"][1]["content"]
         verified = body.split("<respuesta_verificada>\n", 1)[1].split("\n</respuesta_verificada>")[0]
@@ -77,7 +109,7 @@ def test_policy_answer_rewritten_keeps_citations_and_conflicts(monkeypatch):
     assert data["metrics"]["retrieval_mode"] == "bm25"
 
 
-def test_abstention_is_never_rewritten(monkeypatch):
+def test_abstention_is_never_rewritten(monkeypatch, policy_index):
     fake = _install(monkeypatch, ollama_reply("En diciembre venderemos $1,000,000.00 MXN."))
     data = client.post("/chat", json={"question": "¿Cuánto vamos a vender en diciembre?"}).json()
     assert data["status"] == "insufficient_data" and "$1,000,000" not in data["answer"]
@@ -118,7 +150,7 @@ def test_settings_from_env_defaults_and_overrides(monkeypatch):
     assert (s.enabled, s.model, s.base_url, s.timeout_s) == (True, "llama3.1", "http://127.0.0.1:11434", 15.0)
 
 
-def test_app_starts_with_llm_enabled_and_no_ollama():
+def test_app_starts_with_llm_enabled_and_no_ollama(policy_index_dir):
     """A fresh process with HEB_LLM_ENABLED=true but no Ollama must still answer deterministically."""
     code = (
         "import json,sys; sys.path.insert(0, %r)\n"
@@ -126,8 +158,9 @@ def test_app_starts_with_llm_enabled_and_no_ollama():
         "from app.api import main\n"
         "d = TestClient(main.app).post('/chat', json={'question': '¿Cuál es la tolerancia de merma en panadería?'}).json()\n"
         "print(json.dumps({'status': d['status'], 'reason': d['metrics']['fallback_reason'], 'ok': 'Panadería' in d['answer']}))\n"
-    ) % str(main.__file__.rsplit("/app/", 1)[0] if "/app/" in main.__file__ else ".")
-    env = {**os.environ, "HEB_LLM_ENABLED": "true", "OLLAMA_BASE_URL": "http://127.0.0.1:9", "HEB_LLM_TIMEOUT_S": "2"}
+    ) % str(ROOT)
+    env = {**os.environ, "HEB_LLM_ENABLED": "true", "OLLAMA_BASE_URL": "http://127.0.0.1:9", "HEB_LLM_TIMEOUT_S": "2",
+           "HEB_RAG_INDEX_DIR": str(policy_index_dir), "HEB_RAG_EMBEDDINGS": "off"}
     out = subprocess.run([sys.executable, "-c", code], env=env, check=True, capture_output=True, text=True).stdout
     result = json.loads(out.strip().splitlines()[-1])
     assert result["status"] == "answered" and result["ok"] is True

@@ -1,4 +1,4 @@
-"""Simulated Ollama for the generative layer tests (no model, no network)."""
+"""Simulated Ollama helpers for tests/llm (unique module name: tests/rag also has a conftest)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ import sys
 from pathlib import Path
 
 import httpx
-import pytest
 
+# tests/llm deliberately has NO conftest.py: tests/rag does `from conftest import ...`
+# and a second conftest module would shadow it depending on collection order.
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -60,7 +61,3 @@ def make_writer(behaviour, *, enabled: bool = True, timeout_s: float = 5.0) -> t
     client = OllamaChatClient(settings.base_url, settings.model, settings.timeout_s, transport=fake.transport)
     return GroundedWriter(settings, client), fake
 
-
-@pytest.fixture
-def writer_factory():
-    return make_writer

@@ -61,9 +61,15 @@ Las respuestas con estado `insufficient_data`, `needs_clarification` o `error` *
 **Costo:** la inferencia es local, así que no hay costo por token de API. Sí hay costo de ejecución local: el modelo ocupa memoria (`load_duration` de Ollama) y CPU o GPU durante segundos por respuesta, frente a milisegundos del modo determinista. Los tokens de embeddings son otro consumo distinto, que se reporta por separado.
 
 ## Comparar los dos modos en tu equipo
+El script ejecuta el Modo A (determinista) y el Modo B (llama3.2) sobre las mismas 12 preguntas; activa el LLM por sí mismo en el Modo B.
 ```powershell
-$env:HEB_LLM_ENABLED = "true"
+$env:HEB_LLM_MODEL = "llama3.2"
+$env:OLLAMA_BASE_URL = "http://localhost:11434"
 .\.venv\Scripts\python.exe scripts\eval_llm_modes.py --out data\eval_llm_modes.json
-HEB_LLM_REAL_TESTS=1  # prueba opcional con Ollama real:
-$env:HEB_LLM_REAL_TESTS = "1"; .\.venv\Scripts\python.exe -m pytest tests\llm\test_real_ollama.py -q -s
+```
+Prueba opcional contra Ollama real (en CI siempre se omite):
+```powershell
+$env:HEB_LLM_REAL_TESTS = "1"
+.\.venv\Scripts\python.exe -m pytest tests\llm\test_real_ollama.py -q -s
+Remove-Item Env:HEB_LLM_REAL_TESTS
 ```
