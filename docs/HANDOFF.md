@@ -2,6 +2,8 @@
 
 This file describes the process; **live communication happens in GitHub Issues and Pull Requests**. Branch-local edits to this file are not instantly visible to the other agent.
 
+For local folder isolation and commands, see [WORKTREES.md](WORKTREES.md).
+
 ## Before starting
 - Read requirements, architecture, contracts, and decisions.
 - Confirm the assigned Issue, ownership, dependencies, and acceptance tests.
