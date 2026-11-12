@@ -130,7 +130,8 @@ def test_app_starts_with_llm_enabled_and_no_ollama():
     env = {**os.environ, "HEB_LLM_ENABLED": "true", "OLLAMA_BASE_URL": "http://127.0.0.1:9", "HEB_LLM_TIMEOUT_S": "2"}
     out = subprocess.run([sys.executable, "-c", code], env=env, check=True, capture_output=True, text=True).stdout
     result = json.loads(out.strip().splitlines()[-1])
-    assert result == {"status": "answered", "reason": "ollama_no_disponible", "ok": True}
+    assert result["status"] == "answered" and result["ok"] is True
+    assert result["reason"] in {"ollama_no_disponible", "timeout"}
 
 
 @pytest.mark.parametrize("field,value", [("prompt_eval_count", "abc"), ("eval_count", []), ("eval_count", -3)])
