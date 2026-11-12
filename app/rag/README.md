@@ -14,17 +14,40 @@ pregunta ──> BM25 (+ coseno de embeddings) ──RRF──> top-k ──> fi
 
 | Archivo | Función |
 | --- | --- |
-| `extraction.py` | PyMuPDF, detección de secciones (tamaño/negrita/numeración), páginas vacías, PDFs corruptos o cifrados, fechas de vigencia y frases "reemplaza a…" / "en caso de conflicto…" tomadas del texto |
-| `chunking.py` | Fragmentación con ventana deslizante por página y sección |
+| `extraction.py` | PyMuPDF: secciones (tamaño/negrita/numeración, encabezados de varias líneas), tablas con `find_tables` (una fila = un bloque "Encabezado: valor \| …"), eliminación de encabezados/pies repetidos, páginas vacías, PDFs corruptos o cifrados; código, versión, vigencia, documentos citados y frases de reemplazo/precedencia tomadas del texto |
+| `chunking.py` | Prosa: ventana deslizante por página y sección. Tablas: cada fila es un fragmento atómico |
 | `bm25.py`, `text.py` | BM25 sin dependencias; normalización española (acentos, plurales, stopwords) |
 | `embeddings.py` | Adaptador Ollama `POST /api/embed` (stdlib), registra llamadas, tokens y latencia |
 | `index.py` | Construcción, persistencia (`index.json` + `.gitignore` automático), búsqueda BM25/híbrida RRF (k=60) |
 | `conflicts.py` | Contradicciones numéricas (días, %, horas, $…) y de modalidad (permitido/prohibido) |
-| `service.py` | `retrieve_policy`, `answer_policy_question`, abstención, respuesta extractiva |
+| `service.py` | `retrieve_policy`, `answer_policy_question`, abstención (cobertura, foco, entidad ausente en tabla, cifras de ventas) |
+| `answering.py` | Reordenamiento por respuesta directa, tablas como entidad + atributo, selección de oraciones y pasajes secundarios, respuesta en bloques (confirmado / contradicción / no mencionado) |
 | `interface.py` | **Interfaz estable para el backend**: `search_policies`, `rag_health` |
 | `prompts.py` | Prompt fundamentado opcional para el adaptador LLM compartido |
 | `evaluation.py` | hit@k, MRR, abstención, conflictos, latencia, tokens |
 | `synthetic.py` | 5 PDFs **ficticios** para pruebas/demo |
+
+## Criterios de recuperación (fase 2)
+Todas las reglas son generales y se derivan del texto de los PDF; ninguna depende de un documento concreto.
+- **Filas de tabla atómicas**: "Electrodomésticos y electrónicos menores | Plazo: 30 días naturales" se cita completa.
+- **Expansión por definiciones del corpus**: solo secciones "Definiciones" con listas explícitas ("tales como A, B…"); solo términos poco frecuentes (≤ 5 % de los fragmentos). Ej.: *licuadora → electrodomésticos y electrónicos menores*.
+- **Coincidencias suaves** (expansión o prefijo de 5 letras: *devolver ~ devolución*) valen **0.5** tanto en el ranking BM25 como en la cobertura usada para abstenerse.
+- **Filas de metadatos y control de cambios** solo participan si la pregunta es sobre historial (versión, vigencia, actualización…) **y** nombra un documento; nunca se usan para detectar conflictos.
+- **Preguntas de un solo término** cuya evidencia cubre ≥ 3 temas distintos devuelven `needs_clarification` con las opciones (excepto "¿qué es…?").
+- **Preguntas "¿qué es…?"** priorizan las secciones "Definiciones".
+- **Conflictos con filas de tabla**: la etiqueta de la fila (sin palabras negadas: "no lácteos") debe aparecer en la otra frase.
+- **Precedencia por subordinación**: si un documento dice que "prevalece la política o el procedimiento" (FAQ, sección 1), se prefiere el otro documento **solo** si su propio código es POL-/PRO- (o su título empieza por Política/Procedimiento) **y** el primero lo cita. Un manual (MAN-) no cuenta: el conflicto queda `unresolved`.
+- Se descartaron por empeorar las métricas: refuerzo del título de sección (BM25F) y la regla de "término más específico" (provocaba abstenciones falsas). Los umbrales (`min_coverage=0.45`) **no** se cambiaron.
+
+## Selección de evidencia y respuesta (fase 3)
+Detalle y casos en [`EVALUATION.md`](EVALUATION.md). En resumen:
+- **Recuperación y orden:** se recuperan 3×top_k candidatos (mínimo 15). Se filtran por cobertura o por entidad + atributo de tabla y se reordenan por cobertura + título de sección (0.5) + entidad.
+- **Abstención con motivo:**
+  - el foco de "¿Cuál es el X…?" o "¿Cuánto cuesta…?" no está en la evidencia;
+  - la tabla consultada no incluye la entidad preguntada;
+  - la pregunta pide cifras de ventas.
+- **Respuesta:** solo oraciones copiadas y citadas. Se incluyen restricciones ("solo", "no", "exclusivamente"…) que comparten términos con la pregunta. Los pasajes secundarios solo entran si corroboran desde otro documento, si están en un conflicto o si casi empatan en la misma sección.
+- **Determinista:** el resultado no depende de `PYTHONHASHSEED`.
 
 ## Modos de recuperación
 - **BM25** si Ollama no responde (al construir o al consultar), si `HEB_RAG_EMBEDDINGS=off`, o si el modelo de consulta no coincide con el del índice. Se informa en `metrics.retrieval_mode` y `metrics.warnings`.
@@ -39,7 +62,7 @@ pregunta ──> BM25 (+ coseno de embeddings) ──RRF──> top-k ──> fi
 Se muestran **ambas** evidencias. Solo se marca `resolved_by_source` cuando un documento dice explícitamente que reemplaza al otro o establece una regla de precedencia, y la frase identifica **un único** documento indexado (por nombre de archivo, raíz del nombre ≥ 4 caracteres o título, con coincidencia por límites: `_v1` ≠ `_v10`, `v1` ≠ `v1.2`). La frase se cita en `basis`. Si la frase es ambigua (coincide con ambas versiones o con varios documentos) el conflicto queda `unresolved`. Las fechas de vigencia se reportan pero **nunca** deciden, ni siquiera para desempatar.
 
 ## Abstención
-`insufficient_data` si ningún fragmento cubre ≥ `HEB_RAG_MIN_COVERAGE` (0.45) del peso IDF de los términos de la pregunta (o, en modo híbrido, coseno ≥ `HEB_RAG_MIN_EMBED_SIM`, 0.6). Los umbrales se ajustaron con el corpus sintético y **deben recalibrarse con los PDFs reales**.
+`insufficient_data` si ningún fragmento cubre ≥ `HEB_RAG_MIN_COVERAGE` (0.45) del peso IDF de los términos de la pregunta (o, en modo híbrido, coseno ≥ `HEB_RAG_MIN_EMBED_SIM`, 0.6). Además hay abstenciones con motivo: foco no encontrado, entidad ausente en la tabla y cifras de ventas. Con los PDF del ejercicio se compararon 0.40, 0.45, 0.50 y 0.55 en el conjunto independiente: 0.45 y 0.50 dan el mismo resultado y 0.40 empeora, así que 0.45 se mantiene (ver `EVALUATION.md`).
 
 ## Configuración (variables de entorno)
 `HEB_RAG_PDF_DIR` (data/policies), `HEB_RAG_INDEX_DIR` (data/rag_index), `HEB_RAG_EMBEDDINGS` (auto|off|required), `OLLAMA_BASE_URL` (http://localhost:11434), `HEB_RAG_EMBED_MODEL` (bge-m3), `HEB_RAG_TOP_K`, `HEB_RAG_MIN_COVERAGE`, `HEB_RAG_MIN_EMBED_SIM`, `HEB_RAG_CHUNK_MAX_WORDS`, `HEB_RAG_CHUNK_OVERLAP_WORDS`, `HEB_RAG_OLLAMA_TIMEOUT_S`.
@@ -61,9 +84,17 @@ Con PDFs reales: cópialos a una carpeta local **no versionada** y apunta `--pdf
 ## Estado compartido
 `get_retriever()` sin argumentos devuelve el recuperador compartido (construido una vez desde variables de entorno). `get_retriever(settings)` y `rag_health(settings)` crean una instancia **separada** y no reemplazan la compartida. Tras reconstruir el índice en disco, llamar a `reset_retriever()`.
 
+## Evaluación con los PDF del ejercicio
+`tests/rag/fixtures/holdout_eval.json`: 49 preguntas **independientes**, escritas antes de la fase 3 y no usadas para ajustar. `tests/rag/fixtures/candidatos_eval.json`: 63 preguntas de desarrollo con respuesta esperada, documento/página, sección y frases verificadas a mano en `candidatos/politicas/` (devoluciones, mermas, apertura/cierre, operación, FAQ, contradicciones, ambiguas y sin respuesta). Ver resultados y limitaciones en [`EVALUATION.md`](EVALUATION.md).
+
+```bash
+python -m app.rag build --pdf-dir candidatos/politicas --index-dir data/rag_index --embeddings off
+python -m app.rag eval --cases tests/rag/fixtures/candidatos_eval.json --index-dir data/rag_index --embeddings off --verify-pdf-dir candidatos/politicas
+```
+
 ## Limitaciones
 - Sin OCR: las páginas escaneadas se reportan en `warnings`/`empty_pages` y no se indexan.
-- Tablas y diseños multicolumna complejos se extraen como texto plano.
+- Tablas: solo las que tienen líneas de rejilla (estrategia de `find_tables`); tablas sin bordes y diseños multicolumna se extraen como texto plano. La detección de tablas cuesta ~1.7 s por PDF (indexación offline).
 - Detección de secciones heurística (tamaño de letra, negrita, numeración).
 - Detección de conflictos heurística: puede omitir contradicciones expresadas sin números ni modalidad explícita, o redactadas de forma muy distinta.
 - Stemming ligero; sinónimos solo se capturan en modo híbrido.

@@ -27,25 +27,39 @@ def chunk_document(
         raise ValueError("overlap_words debe estar en [0, max_words)")
 
     chunks: list[Chunk] = []
-    for (page, section), group in groupby(extracted.blocks, key=lambda b: (b.page, b.section)):
-        words = " ".join(b.text for b in group).split()
+
+    def add(page: int, section: str | None, text: str, kind: str = "text", label: str | None = None) -> None:
+        ordinal = len(chunks)
+        chunks.append(
+            Chunk(
+                chunk_id=_chunk_id(extracted.document, page, ordinal, text),
+                document=extracted.document,
+                page=page,
+                section=section,
+                text=text,
+                kind=kind,
+                label=label,
+            )
+        )
+
+    # Table rows are atomic chunks (one row = one citable fact); prose blocks that
+    # share (page, section) are concatenated and windowed by words.
+    def key(b):
+        return (b.page, b.section, b.kind == "text" or id(b))
+
+    for (page, section, _), group in groupby(extracted.blocks, key=key):
+        blocks = list(group)
+        if blocks[0].kind != "text":
+            for b in blocks:
+                add(page, section, b.text, b.kind, b.label)
+            continue
+        words = " ".join(b.text for b in blocks).split()
         if not words:
             continue
         step = max_words - overlap_words
         start = 0
         while True:
-            window = words[start : start + max_words]
-            text = " ".join(window)
-            ordinal = len(chunks)
-            chunks.append(
-                Chunk(
-                    chunk_id=_chunk_id(extracted.document, page, ordinal, text),
-                    document=extracted.document,
-                    page=page,
-                    section=section,
-                    text=text,
-                )
-            )
+            add(page, section, " ".join(words[start : start + max_words]))
             if start + max_words >= len(words):
                 break
             start += step

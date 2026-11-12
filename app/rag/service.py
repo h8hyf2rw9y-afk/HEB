@@ -8,26 +8,42 @@ orchestration layer; see ``app.rag.prompts.build_grounded_prompt``.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 
 from .config import RagSettings
-from .conflicts import topic_tokens, detect_conflicts
+from .answering import (
+    PREFIX,
+    analyse_question,
+    assess_hit,
+    compose_answer,
+    prune_table_siblings,
+    rerank,
+    surface_words,
+    table_entity_gaps,
+)
+from .conflicts import _SUBORDINATE_RE, _is_normative, detect_conflicts, topic_tokens
 from .embeddings import EmbeddingProvider, OllamaEmbedder
-from .index import PolicyIndex, SearchHit
-from .models import Evidence, PolicyAnswer, PolicyConflict
-from .text import split_sentences
+from .index import DEFINITIONAL_RE, PolicyIndex, SearchHit
+from .models import Evidence, PolicyAnswer, RetrievalMetrics
+from .text import normalize
 
+# Sales figures: a sales verb or plural "ventas" together with a quantity or
+# ranking word. Singular "venta" is excluded on purpose: policies use it in
+# "piso de venta", "venta neta", "último día de venta".
+_SALES = r"(?:vend(?:i|io|ieron|imos|e|en|emos)\w*|ventas)"
+_QUANT = r"(?:cuant[oa]s?|mas|menos|total\w*|mayor|menor)"
+_DATA_QUESTION_RE = re.compile(rf"\b{_SALES}\b[^?]*\b{_QUANT}\b|\b{_QUANT}\b[^?]*\b{_SALES}\b")
 INSUFFICIENT_MSG = (
     "No encontré información suficiente en los documentos de políticas disponibles para "
     "responder esta pregunta. No se infiere ninguna política que no esté en los documentos."
 )
+CLARIFY_OPTIONS_MSG = (
+    "Tu pregunta es muy general y los documentos tratan varios temas distintos. "
+    "¿A cuál te refieres?"
+)
 CLARIFY_MSG = "La pregunta está vacía o no contiene términos suficientes. ¿Puedes reformularla?"
-
-
-def _cite(e: Evidence) -> str:
-    ref = f"{e.document}, p. {e.page}"
-    return f"[{ref}, sección: {e.section}]" if e.section else f"[{ref}]"
 
 
 def _to_evidence(hit: SearchHit) -> Evidence:
@@ -52,6 +68,7 @@ class PolicyRetriever:
         self.index = index
         self.settings = settings or RagSettings()
         self.embedder = embedder
+        self._prefixes4: set[str] | None = None
 
     @classmethod
     def from_settings(cls, settings: RagSettings | None = None) -> "PolicyRetriever":
@@ -67,6 +84,11 @@ class PolicyRetriever:
         return cls(index, settings, embedder)
 
     # -------------------------------------------------------------------
+    def _known_prefix(self, prefix: str) -> bool:
+        if self._prefixes4 is None:
+            self._prefixes4 = {t[:4] for t in self.index.bm25.idf}
+        return prefix in self._prefixes4
+
     def _is_relevant(self, hit: SearchHit) -> bool:
         if hit.coverage >= self.settings.min_coverage:
             return True
@@ -88,22 +110,111 @@ class PolicyRetriever:
         if not question or not self.index.query_tokens(question):
             return PolicyAnswer(question=question, status="needs_clarification", answer=CLARIFY_MSG)
 
-        hits, metrics = self.index.search(question, top_k=top_k, embedder=self.embedder)
-        relevant = [h for h in hits if self._is_relevant(h)]
-        coverage = max((h.coverage for h in hits), default=0.0)
-        if not relevant:
-            metrics.latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        # Operational-data questions ("¿Qué tienda vendió más en agosto?") ask for
+        # figures that policy documents do not contain; they belong to the
+        # structured-data tools, so the RAG abstains instead of matching words.
+        if _DATA_QUESTION_RE.search(normalize(question)):
             return PolicyAnswer(
                 question=question,
                 status="insufficient_data",
-                answer=INSUFFICIENT_MSG,
+                answer=INSUFFICIENT_MSG + "\nℹ️ Parece una consulta de datos de ventas; "
+                "los documentos de políticas no contienen cifras de ventas.",
+                metrics=RetrievalMetrics(warnings=["Consulta de datos de ventas; fuera del alcance del RAG"]),
+            )
+
+        # Retrieve a wider pool, then keep and order passages by how directly they answer.
+        pool = max(top_k * 3, 15)
+        hits, metrics = self.index.search(question, top_k=pool, embedder=self.embedder)
+        coverage = max((h.coverage for h in hits), default=0.0)
+        q = analyse_question(question)
+        q_tokens = self.index.query_tokens(question)
+        alternatives = self.index.query_alternatives(q_tokens)
+        extra = {x for alts in alternatives.values() for x in alts}
+        q_pfx = {t[:PREFIX] for t in q.terms | extra}
+        weight = self.index.bm25.term_idf
+        top_score = max((h.score for h in hits), default=0.0)
+        assessed = [assess_hit(q, h, q_pfx, top_score) for h in hits]
+        relevant_a = [
+            a for a in assessed
+            if self._is_relevant(a.hit) or (a.entity_match and a.attribute_match)
+        ]
+
+        def insufficient(reason: str | None = None) -> PolicyAnswer:
+            metrics.latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            if reason:
+                metrics.warnings.append(reason)
+            return PolicyAnswer(
+                question=question,
+                status="insufficient_data",
+                answer=INSUFFICIENT_MSG + (f"\nℹ️ {reason}" if reason else ""),
                 coverage=coverage,
                 metrics=metrics,
             )
 
-        conflicts = detect_conflicts(question, relevant, self.index.documents)
+        if not relevant_a:
+            return insufficient()
+
+        words = surface_words(question)
+        # A table that matches the asked attribute but not the asked entity.
+        for gap in table_entity_gaps(q, relevant_a, weight):
+            gap_rows = {
+                a.hit.chunk.chunk_id for a in relevant_a
+                if a.hit.chunk.kind == "table_row"
+                and (a.hit.chunk.document, a.hit.chunk.section) == (gap.document, gap.section)
+            }
+            relevant_a = [a for a in relevant_a if a.hit.chunk.chunk_id not in gap_rows]
+            others_cover = any(
+                {t[:PREFIX] for t in topic_tokens(a.hit.chunk.text)} & {t[:PREFIX] for t in gap.missing}
+                for a in relevant_a
+            )
+            if not others_cover:
+                asked = ", ".join(sorted(words.get(t, t) for t in gap.missing))
+                listed = ", ".join(lbl for lbl in gap.labels if lbl)
+                return insufficient(
+                    f"La tabla «{gap.section}» ({gap.document}, p. {gap.page}) no incluye «{asked}»; "
+                    f"incluye: {listed}."
+                )
+        if not relevant_a:
+            return insufficient()
+
+        # The asked attribute ("¿Cuál es el *precio* de ...?") must be in the evidence.
+        if q.focus:
+            focus_pfx = {t[:PREFIX] for t in q.focus}
+            if not any({t[:PREFIX] for t in topic_tokens(a.hit.chunk.text)} & focus_pfx for a in relevant_a):
+                asked = ", ".join(sorted(words.get(t, t) for t in q.focus))
+                return insufficient(f"Los documentos no indican «{asked}» para lo que se pregunta.")
+
+        ranked = rerank(prune_table_siblings(relevant_a))[:top_k]
+        relevant = [a.hit for a in ranked]
+        conflicts = detect_conflicts(question, relevant, self.index.documents, extra_terms=extra)
         evidence = [_to_evidence(h) for h in relevant]
-        answer_text = compose_extractive_answer(question, evidence, conflicts)
+        options = _ambiguity_options(question, q_tokens, relevant)
+        if options:
+            metrics.latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            return PolicyAnswer(
+                question=question,
+                status="needs_clarification",
+                answer=CLARIFY_OPTIONS_MSG + "\n" + "\n".join(f"- {o}" for o in options),
+                evidence=evidence,
+                conflicts=conflicts,
+                coverage=coverage,
+                metrics=metrics,
+            )
+        answer_text = compose_answer(
+            q,
+            ranked,
+            {e.chunk_id: e for e in evidence},
+            conflicts,
+            weight,
+            known=lambda t: t in self.index.bm25.idf,
+            known_prefix=self._known_prefix,
+            normative_docs={d for d, info in self.index.documents.items() if _is_normative(info)},
+            subordinate_docs={
+                d for d, info in self.index.documents.items()
+                if any(_SUBORDINATE_RE.search(normalize(s)) for s in info.precedence_statements)
+            },
+            original_words=words,
+        )
         metrics.latency_ms = round((time.perf_counter() - t0) * 1000, 2)
         return PolicyAnswer(
             question=question,
@@ -116,54 +227,20 @@ class PolicyRetriever:
         )
 
 
-def _best_sentence(question: str, passage: str) -> str:
-    q = topic_tokens(question)
-    sentences = split_sentences(passage) or [passage]
-    return max(sentences, key=lambda s: (len(topic_tokens(s) & q), -sentences.index(s)))
-
-
-def compose_extractive_answer(
-    question: str, evidence: list[Evidence], conflicts: list[PolicyConflict], max_points: int = 3
-) -> str:
-    """Grounded answer built only from retrieved sentences, each with its citation."""
-    preferred = {c.preferred_document for c in conflicts if c.preferred_document}
-    superseded = {
-        claim.document
-        for c in conflicts
-        if c.preferred_document
-        for claim in c.claims
-        if claim.document != c.preferred_document
-    }
-    ordered = sorted(
-        evidence,
-        key=lambda e: (e.document in superseded, e.document not in preferred),
-    )
-    lines = ["Según los documentos de políticas:"]
-    seen: set[str] = set()
-    for e in ordered:
-        if len(seen) >= max_points:
-            break
-        sentence = _best_sentence(question, e.passage)
-        if sentence in seen:
-            continue
-        seen.add(sentence)
-        note = " (documento reemplazado según la fuente)" if e.document in superseded else ""
-        lines.append(f"- {sentence} {_cite(e)}{note}")
-
-    for c in conflicts:
-        claims = "; ".join(
-            f"{cl.document} p. {cl.page}: {', '.join(cl.values) or cl.sentence}" for cl in c.claims
-        )
-        if c.resolution == "resolved_by_source":
-            lines.append(
-                f"⚠️ Política contradictoria ({c.topic}): {claims}. Prevalece {c.preferred_document}. {c.basis}"
-            )
-        else:
-            lines.append(
-                f"⚠️ Política contradictoria sin resolver ({c.topic}): {claims}. {c.basis} "
-                "Se recomienda confirmar con el área responsable."
-            )
-    return "\n".join(lines)
+def _ambiguity_options(question: str, q_tokens: list[str], relevant: list[SearchHit]) -> list[str]:
+    """A one-term question ("¿Cuál es el plazo?") whose evidence covers three or
+    more different subjects is ambiguous: ask which one is meant instead of
+    picking one. Definitional questions ("¿Qué es SIGMA?") are not ambiguous."""
+    if len(set(q_tokens)) != 1 or DEFINITIONAL_RE.search(question):
+        return []
+    subjects: list[str] = []
+    for h in relevant:
+        c = h.chunk
+        subject = f"{c.label} — {c.section}" if c.label else (c.section or c.document)
+        subject = f"{subject} ({c.document}, p. {c.page})"
+        if subject not in subjects:
+            subjects.append(subject)
+    return subjects if len(subjects) >= 3 else []
 
 
 # ---------------------------------------------------------------------------
