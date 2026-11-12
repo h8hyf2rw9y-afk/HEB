@@ -223,6 +223,20 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
 
     if not all(path.is_file() for path in (sales, stores)):
         return _missing(question, "No están disponibles ventas.csv y tiendas.csv.")
+    # Reject years outside the dataset rather than quietly using 2026 data.
+    years = re.findall(r"\b20\d{2}\b", q)
+    if any(year != "2026" for year in years):
+        return _missing(question, "El archivo de ventas solo contiene junio a agosto de 2026.")
+    if re.search(r"\b(mediana|margen|ganancia|utilidad|pronostico|proyeccion)\b", q):
+        return _missing(question, "No existe una consulta verificada para esa métrica.")
+    sku_match = re.search(r"\bsku-\d+\b", q)
+    sku_value = sku_match.group(0).upper() if sku_match else None
+    if sku_value:
+        if not products.is_file():
+            return _missing(question, "No está disponible catalogo_productos.csv.")
+        with products.open(encoding="utf-8-sig", newline="") as source_file:
+            if not any(row["sku"].upper() == sku_value for row in csv.DictReader(source_file)):
+                return _missing(question, "El SKU indicado no existe en el catálogo.")
     start, end, period = _period(question)
     if period == "multiple":
         return _missing(question, "Especifica solo un mes: junio, julio o agosto de 2026.")
@@ -232,12 +246,17 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     # Distinguish money from units. Net sales already account for refunds (negative rows).
     units = bool(re.search(r"\b(unidades|piezas|cantidad de productos)\b", q))
     discounts = bool(re.search(r"\b(descuento|descuentos)\b", q))
+    count_transactions = bool(re.search(r"\b(cuantas ventas|numero de ventas|cantidad de ventas|numero de registros)\b", q))
+    average = bool(re.search(r"\b(promedio|media)\b", q))
     measure = "v.unidades" if units else "v.descuento_mxn" if discounts else "v.venta_neta_mxn"
-    metric_label = "unidades netas" if units else "descuentos" if discounts else "ventas netas"
+    metric_label = ("registros de venta" if count_transactions else "promedio de unidades" if average and units
+                    else "promedio de ventas netas" if average else "unidades netas" if units
+                    else "descuentos" if discounts else "ventas netas")
+    aggregation = "COUNT(*)" if count_transactions else f"AVG({measure})" if average else f"SUM({measure})"
     ranking = bool(re.search(r"\b(mas|mayor|mejor|menos|menor|peor|ranking|top)\b", q))
     ascending = bool(re.search(r"\b(menos|menor|peor)\b", q))
 
-    by_product = bool(re.search(r"\b(producto|productos|sku)\b", q))
+    by_product = bool(re.search(r"\b(producto|productos|sku)\b", q)) and not bool(sku_value)
     by_category = bool(re.search(r"\b(categoria|categorias)\b", q))
     by_channel = bool(re.search(r"\b(canal|ecommerce|piso)\b", q))
     by_store = bool(re.search(r"\b(tienda|tiendas|sucursal|sucursales)\b", q))
@@ -257,24 +276,31 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     if join_products:
         params.append(str(products))
     params.extend([start, end])
+    if sku_value:
+        # A named SKU is an exact filter, not a request to rank all products.
+        if not re.search(r"\b(por tienda|por canal|por categoria)\b", q):
+            group = None
     store_filter = " AND v.tienda_id = ?" if store_id else ""
+    sku_filter = " AND v.sku = ?" if sku_value else ""
     if store_id:
         params.append(store_id)
+    if sku_value:
+        params.append(sku_value)
     if group:
         direction = "ASC" if ascending else "DESC"
         sql = f"""
-            SELECT {group} AS nombre, SUM({measure}) AS valor
+            SELECT {group} AS nombre, {aggregation} AS valor
             FROM read_csv_auto(?) v JOIN read_csv_auto(?) t ON v.tienda_id = t.tienda_id
             {join}
-            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE){store_filter}
+            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE){store_filter}{sku_filter}
             GROUP BY 1 ORDER BY valor {direction}, nombre ASC LIMIT 5
         """
     else:
         sql = f"""
-            SELECT SUM({measure}) AS valor
+            SELECT {aggregation} AS valor
             FROM read_csv_auto(?) v JOIN read_csv_auto(?) t ON v.tienda_id = t.tienda_id
             {join}
-            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE){store_filter}
+            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE){store_filter}{sku_filter}
         """
     with duckdb.connect() as con:
         rows = con.execute(sql, params).fetchall()
@@ -282,14 +308,14 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
         return _missing(question, "No hay filas de ventas para ese periodo.")
 
     def display(value):
-        return f"{int(value):,} unidades" if units else _money(value)
+        return f"{int(value):,} registros" if count_transactions else f"{float(value):,.2f} unidades" if average and units else f"{int(value):,} unidades" if units else _money(value)
     if group:
         lines = [f"{n}. {name}: {display(value)}" for n, (name, value) in enumerate(rows, start=1)]
         answer = f"{metric_label.capitalize()} por {group_name} ({period}), {'menor a mayor' if ascending else 'mayor a menor'}:\n" + "\n".join(lines)
     else:
-        scope = f" · {store_name}" if store_name else ""
+        scope = (f" · {store_name}" if store_name else "") + (f" · {sku_value}" if sku_value else "")
         answer = f"Total de {metric_label} ({period}{scope}): {display(rows[0][0])}."
     evidence = [_source("ventas.csv", period), _source("tiendas.csv", "tienda_id")]
-    if join_products:
+    if join_products or sku_value:
         evidence.append(_source("catalogo_productos.csv", "sku"))
     return AnalyticalAnswer(answer, "answered", evidence, "sales")
