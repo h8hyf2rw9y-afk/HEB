@@ -1,0 +1,5 @@
+# Dependencias del módulo RAG (propuestas para el requirements.txt raíz vía Issue).
+pymupdf>=1.24
+pydantic>=2.6
+# desarrollo / pruebas
+pytest>=8
