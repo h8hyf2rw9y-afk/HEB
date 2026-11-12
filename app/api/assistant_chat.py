@@ -54,6 +54,33 @@ def classify_assistant_question(question: str) -> str | None:
     return None
 
 
+
+_GENERAL_CHAT = re.compile(
+    r"^(?:como estas|que tal estas|como te va|"
+    r"cuentame(?: un)?|dime un chiste|hazme reir|"
+    r"hablame de|explicame|explica|que opinas de|"
+    r"que es|quien fue|por que|porque|"
+    r"dime algo interesante|recomiendame)\b"
+)
+_BUSINESS_TOPIC = re.compile(
+    r"\b(heb|h-e-b|tienda|sucursal|venta|facturacion|inventario|stock|"
+    r"sku|ticket|merma|devoluc|reembolso|politica|procedimiento|"
+    r"manual|documento|archivo|fuente|colaborador|empleado|trabajador|"
+    r"personal|turno|ausencia|incapacidad|salario|nomina|sigma|"
+    r"caja|cajero|reorden|producto)\w*\b"
+)
+
+
+def is_general_conversation(question: str) -> bool:
+    """Select ordinary off-topic chat without stealing enterprise questions.
+
+    Never send a question naming business concepts or documents to a
+    free-form LLM. Uncertain operational questions remain in grounded flow.
+    """
+    q = _plain(question).strip().strip(" ¡!¿?.,;:")
+    return bool(_GENERAL_CHAT.search(q) and not _BUSINESS_TOPIC.search(q))
+
+
 def check_ollama(settings: LLMSettings, *, timeout_s: float = 2.5) -> dict[str, object]:
     """Check live Ollama availability and model installation via /api/tags.
 
