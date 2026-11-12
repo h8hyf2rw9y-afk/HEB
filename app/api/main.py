@@ -1,7 +1,6 @@
 """FastAPI entry points for structured queries and grounded policy answers."""
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Literal
@@ -12,20 +11,10 @@ from pydantic import BaseModel, Field
 from app.data.catalog import build_catalog
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
+from app.tools.analytics import answer_data_question, looks_like_data
 
 app = FastAPI(title="HEB AI Assistant", version="0.2.0")
-CATALOG = build_catalog(Path("data/raw"))
-
-# Explicit, conservative routing: structured sales questions are not sent to policy RAG.
-_POLICY_TERMS = re.compile(
-    r"\b(?:pol[ií]tica(?:s)?|procedimiento(?:s)?|devoluci[oó]n(?:es)?|"
-    r"devolver|devuelv[oaes]|reembolso(?:s)?|merma(?:s)?|caducidad|"
-    r"caduc[oa]s?|apertura|abrir\s+(?:la\s+)?tienda|"
-    r"cierre\s+(?:de\s+)?tienda|cerrar\s+(?:la\s+)?tienda|"
-    r"manual(?:es)?|faq|reglamento(?:s)?)\b",
-    re.IGNORECASE,
-)
-
+CATALOG = build_catalog(Path(__file__).resolve().parents[2] / "candidatos" / "datos")
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
@@ -83,11 +72,21 @@ def chat(request: ChatRequest) -> ChatResponse:
             answer="Escribe una pregunta para continuar.",
             status="needs_clarification",
         )
-    if not _POLICY_TERMS.search(question):
+    # Data queries use fixed, parameterized SQL. Everything else goes to the RAG.
+    # This also fixes previously unreachable policy questions such as SIGMA.
+    if looks_like_data(question):
+        try:
+            result = answer_data_question(question)
+        except Exception:
+            return ChatResponse(
+                answer="No pude consultar los CSV en este momento. Verifica que DuckDB esté instalado y los archivos estén disponibles.",
+                status="error",
+                metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+            )
         return ChatResponse(
-            answer="Todavía no está disponible la consulta conversacional de datos estructurados. "
-                   "Puedes consultar políticas de devoluciones, mermas y procedimientos.",
-            status="insufficient_data",
+            answer=result.answer,
+            status=result.status,
+            evidence=result.evidence,
             metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
         )
 
