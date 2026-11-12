@@ -120,8 +120,15 @@ def route_business_question(
     # Long-lasting employment absence is NOT covered by the one-shift staffing
     # contingency in FAQ P25. Do not pass it to a PDF retriever that may return
     # unrelated reimbursement or store-opening policy.
-    if _HR_SUBJECT.search(q) and _HR_ABSENCE.search(q) and (
+    employment_decision = bool(re.search(
+        r"\b(desped\w*|despid\w*|despido|sancion\w*|baja|"
+        r"rescisi\w*|contrato|laboral)\b", q
+    ))
+    explicit_absence = bool(_HR_ABSENCE.search(q) or re.search(r"\bfaltar\b", q))
+    employee_context = bool(_HR_SUBJECT.search(q) or (employment_decision and explicit_absence))
+    if employee_context and explicit_absence and (
         _LONG_DURATION.search(q) or "lleva" in q or "desde hace" in q
+        or employment_decision
     ):
         return RoutedAnswer(
             "Entiendo que un colaborador lleva tiempo sin asistir. "
