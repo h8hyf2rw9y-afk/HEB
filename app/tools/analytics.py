@@ -206,9 +206,13 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
         params = [str(tickets), str(stores)] + ([store_id] if store_id else [])
         with duckdb.connect() as con:
             rows = con.execute(sql, params).fetchall()
-        if not rows:
-            return _missing(question, "No se encontraron tickets que cumplan los filtros.")
         label = ("críticos " if critical_only else "") + ("pendientes" if pending_only else "registrados")
+        if not rows:
+            return AnalyticalAnswer(
+                f"Tickets {label}, por tienda:\nTotal: 0 tickets.",
+                "answered", [_source("tickets_mesa_servicio.csv", "prioridad y estado al corte"),
+                             _source("tiendas.csv", "tienda_id")], "tickets",
+            )
         lines = [f"{store}: {total} tickets {label}." for store, total in rows]
         return AnalyticalAnswer(
             f"Tickets {label}, por tienda:\n" + "\n".join(lines) +
