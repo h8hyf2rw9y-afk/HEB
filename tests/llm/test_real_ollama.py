@@ -22,8 +22,17 @@ def test_real_llama_rewrites_a_data_answer_and_passes_validation():
                 "2. Tienda Cumbres: $1,973,086.37 MXN\n3. Tienda Anáhuac: $949,469.00 MXN\n4. Tienda Lomas del Sur: $833,131.19 MXN")
     out = writer.rewrite(question="¿Qué tienda vendió más en agosto de 2026?", kind="datos", status="answered",
                          verified_answer=verified, evidence=[{"source": "ventas.csv"}, {"source": "tiendas.csv"}])
+    print("\nRESULTADO REAL llama3.2:", {
+        "generated": out.generated, "fallback_reason": out.fallback_reason, "model": out.model,
+        "llm_calls": out.llm_calls, "input_tokens": out.input_tokens, "output_tokens": out.output_tokens,
+        "generation_latency_ms": out.generation_latency_ms, "warnings": out.warnings,
+    })
+    print("RESPUESTA:", out.answer)
+    # Ollama must have been reached and reported real counters.
+    assert out.fallback_reason not in ("ollama_no_disponible", "timeout"), out.warnings
     assert out.llm_calls == 1 and out.input_tokens > 0 and out.output_tokens > 0
-    print({"generated": out.generated, "reason": out.fallback_reason, "tokens": out.total_tokens,
-           "latency_ms": out.generation_latency_ms, "answer": out.answer})
-    # The model may legitimately fail validation; what must hold is that figures are never altered.
-    assert "$2,163,062.36 MXN" in out.answer
+    # Whatever the model wrote, the user-facing answer keeps the verified figures.
+    for figure in ("$2,163,062.36 MXN", "$1,973,086.37 MXN", "$949,469.00 MXN", "$833,131.19 MXN"):
+        assert figure in out.answer
+    if not out.generated:
+        pytest.fail(f"llama3.2 respondió pero la redacción no pasó la validación ({out.fallback_reason}): {out.warnings}")

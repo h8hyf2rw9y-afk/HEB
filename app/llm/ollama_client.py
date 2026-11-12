@@ -48,7 +48,27 @@ class ChatResult:
 
 
 def _ms(ns: object) -> float:
-    return round(float(ns) / 1e6, 1) if isinstance(ns, (int, float)) else 0.0
+    """Ollama durations are nanoseconds; anything else counts as 0 (informational field)."""
+    if isinstance(ns, bool) or not isinstance(ns, (int, float)) or ns < 0 or ns != ns:
+        return 0.0
+    return round(float(ns) / 1e6, 1)
+
+
+def _token_count(data: dict, field: str) -> int:
+    """Validate an Ollama token counter: absent/null → 0; otherwise a non-negative int.
+
+    Token counts are reported to the user and summed into costs, so a value that
+    is not a plain non-negative integer (strings, lists, floats, booleans,
+    negatives) is a malformed response, not something to coerce.
+    """
+    value = data.get(field)
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise LLMBadResponse(f"Contador de tokens inválido en Ollama: {field}={value!r}")
+    if value < 0:
+        raise LLMBadResponse(f"Contador de tokens negativo en Ollama: {field}={value}")
+    return value
 
 
 class OllamaChatClient:
@@ -87,11 +107,12 @@ class OllamaChatClient:
             raise LLMBadResponse("Respuesta de Ollama sin texto")
         if not content.strip():
             raise LLMEmptyResponse("Ollama devolvió una respuesta vacía")
+        model = data.get("model")
         return ChatResult(
             content=content.strip(),
-            model=str(data.get("model") or self.model),
-            prompt_tokens=int(data.get("prompt_eval_count") or 0),
-            completion_tokens=int(data.get("eval_count") or 0),
+            model=model if isinstance(model, str) and model.strip() else self.model,
+            prompt_tokens=_token_count(data, "prompt_eval_count"),
+            completion_tokens=_token_count(data, "eval_count"),
             latency_ms=latency_ms,
             load_ms=_ms(data.get("load_duration")),
             prompt_eval_ms=_ms(data.get("prompt_eval_duration")),

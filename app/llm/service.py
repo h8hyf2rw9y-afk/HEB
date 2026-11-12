@@ -83,6 +83,18 @@ class GroundedWriter:
             fallback.warnings.append(f"Respuesta determinista; el modelo no se usó ({exc.reason}): {exc}")
             logger.info("LLM fallback (%s): %s", exc.reason, exc)
             return fallback
+        except Exception as exc:  # noqa: BLE001 - last line of defence for /chat
+            # Anything the provider path raises that we did not classify (a new
+            # httpx error type, an unexpected payload shape) must not break the
+            # user's answer. It is logged as an error so it gets fixed, and the
+            # metrics name it as an unexpected failure rather than a known one.
+            fallback.fallback_reason = "error_inesperado_llm"
+            fallback.generation_latency_ms = round((time.perf_counter() - start) * 1000, 1)
+            fallback.warnings.append(
+                f"Respuesta determinista; fallo inesperado al llamar al modelo: {type(exc).__name__}"
+            )
+            logger.exception("Unexpected LLM failure; deterministic answer kept")
+            return fallback
 
         outcome = GenerationOutcome(
             answer=verified_answer,

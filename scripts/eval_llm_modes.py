@@ -129,8 +129,10 @@ def main(argv=None) -> int:
     if "B_llm" in report["modes"] and not report["modes"]["B_llm"]["summary"]["real_model_used"]:
         print("\nAVISO: Ollama no respondió; el Modo B no contiene mediciones de un modelo real (todo fue fallback).")
     if args.out:
-        Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\nReporte guardado en {args.out}")
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)  # data/ may not exist yet
+        out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\nReporte guardado en {out_path.resolve()}")
     return 0
 
 

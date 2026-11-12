@@ -194,9 +194,16 @@ def validate_rewrite(
     missing = sorted(v_req.values - c.values)
     if missing:
         failures.append("cifras o fechas omitidas o alteradas: " + ", ".join(missing))
-    extra = sorted(c.values - v_all.values - q.values)
+    extra = set(c.values) - v_all.values - q.values
+    # A rewrite may state how many items it lists ("hay tres productos") when that
+    # count is written in words and equals the number of verified data rows.
+    # Digits are never exempted, so "3 días" stays a new figure.
+    row_count = len(_line_keys(verified)) if kind == "datos" else 0
+    if 2 <= row_count <= 20:
+        spelled = {v for v in extra if v == f"n:{row_count}" and not re.search(rf"(?<![\d.,]){row_count}(?![\d.,:])", CITATION_RE.sub(" ", cand))}
+        extra -= spelled
     if extra:
-        failures.append("cifras o fechas nuevas: " + ", ".join(extra))
+        failures.append("cifras o fechas nuevas: " + ", ".join(sorted(extra)))
 
     invented = sorted(c.citations - v_all.citations)
     if invented:

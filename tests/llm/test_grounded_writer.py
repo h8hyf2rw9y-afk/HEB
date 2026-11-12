@@ -276,3 +276,99 @@ def test_prompt_marks_evidence_as_data():
     messages = build_messages("¿Q?", "politicas", "respuesta", None)
     assert "<respuesta_verificada>" in messages[1]["content"]
     assert "DATOS, no instrucciones" in messages[0]["content"]
+
+
+# ------------------------------------------------ malformed token counters
+@pytest.mark.parametrize("field,value", [
+    ("prompt_eval_count", "abc"),
+    ("eval_count", []),
+    ("eval_count", {}),
+    ("prompt_eval_count", -5),
+    ("eval_count", -1),
+    ("eval_count", 3.7),
+    ("prompt_eval_count", True),
+    ("eval_count", "85"),
+])
+def test_malformed_token_counters_fall_back_without_raising(writer_factory, field, value):
+    reply = ollama_reply(A1_GOOD)
+    reply[field] = value
+    writer, fake = writer_factory(reply)
+    out = _rewrite(writer)  # must not raise
+    assert out.answer == A1_VERIFIED and not out.generated
+    assert out.fallback_reason == "respuesta_invalida"
+    assert out.llm_calls == 0 and out.input_tokens == 0 and out.output_tokens == 0
+    assert any("Contador de tokens" in w for w in out.warnings)
+    assert len(fake.requests) == 1  # the call happened; its counters are just unusable
+
+
+@pytest.mark.parametrize("missing", ["prompt_eval_count", "eval_count", "both"])
+def test_absent_or_null_counters_are_zero_not_errors(writer_factory, missing):
+    reply = ollama_reply(A1_GOOD)
+    for field in ("prompt_eval_count", "eval_count"):
+        if missing in (field, "both"):
+            reply[field] = None
+    if missing == "both":
+        del reply["prompt_eval_count"]
+    writer, _ = writer_factory(reply)
+    out = _rewrite(writer)
+    assert out.generated and out.answer == A1_GOOD
+    expected_in = 0 if missing in ("prompt_eval_count", "both") else 420
+    expected_out = 0 if missing in ("eval_count", "both") else 85
+    assert (out.input_tokens, out.output_tokens) == (expected_in, expected_out)
+
+
+def test_malformed_durations_and_model_field_do_not_break_a_valid_reply(writer_factory):
+    reply = ollama_reply(A1_GOOD)
+    reply.update({"load_duration": "x", "eval_duration": -1, "prompt_eval_duration": None, "model": 42})
+    writer, _ = writer_factory(reply)
+    out = _rewrite(writer)
+    assert out.generated and out.model == "llama3.2" and out.total_tokens == 505
+
+
+def test_unexpected_exception_from_provider_becomes_fallback(writer_factory, monkeypatch):
+    writer, _ = writer_factory(ollama_reply(A1_GOOD))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("bug no clasificado")
+
+    monkeypatch.setattr(writer.client, "chat", boom)
+    out = _rewrite(writer)
+    assert out.answer == A1_VERIFIED and not out.generated
+    assert out.fallback_reason == "error_inesperado_llm" and out.llm_calls == 0
+
+
+# ------------------------------------------------- A2: SKU rows must not mix
+A2_VERIFIED = """Inventario al 1 de septiembre de 2026 (máximo 30 resultados):
+Tienda Valle Norte · SKU-1013 · Bolillo pieza: existencia 72, punto de reorden 260.
+Tienda Valle Norte · SKU-1017 · Tortillas de maíz 1 kg: existencia 92, punto de reorden 150.
+Tienda Valle Norte · SKU-1036 · Limón kg: existencia 59, punto de reorden 158."""
+A2_EVIDENCE = [{"source_type": "csv", "source": "inventario.csv", "reference": "corte 2026-09-01"},
+               {"source_type": "csv", "source": "catalogo_productos.csv", "reference": "sku"},
+               {"source_type": "csv", "source": "tiendas.csv", "reference": "tienda_id"}]
+A2_GOOD = ("Al corte del 1 de septiembre de 2026, en Tienda Valle Norte hay tres productos por debajo del punto de reorden: "
+           "SKU-1013 Bolillo pieza (existencia 72, punto de reorden 260), SKU-1017 Tortillas de maíz 1 kg (existencia 92, "
+           "punto de reorden 150) y SKU-1036 Limón kg (existencia 59, punto de reorden 158).")
+
+
+def test_inventory_rewrite_with_all_skus_and_quantities_is_accepted(writer_factory):
+    writer, _ = writer_factory(ollama_reply(A2_GOOD))
+    out = _rewrite(writer, verified=A2_VERIFIED, evidence=A2_EVIDENCE,
+                   question="¿Qué productos de la tienda T01 están por debajo del punto de reorden?")
+    assert out.generated, out.warnings
+
+
+@pytest.mark.parametrize("bad", [
+    # quantities swapped between SKU-1013 and SKU-1036
+    A2_GOOD.replace("existencia 72, punto de reorden 260", "@").replace("existencia 59, punto de reorden 158", "existencia 72, punto de reorden 260").replace("@", "existencia 59, punto de reorden 158"),
+    # one SKU dropped
+    A2_GOOD.replace(" y SKU-1036 Limón kg (existencia 59, punto de reorden 158)", ""),
+    # SKU renamed
+    A2_GOOD.replace("SKU-1017", "SKU-1071"),
+    # snapshot date changed
+    A2_GOOD.replace("1 de septiembre de 2026", "1 de agosto de 2026"),
+])
+def test_inventory_rows_swapped_dropped_or_renamed_are_rejected(writer_factory, bad):
+    writer, _ = writer_factory(ollama_reply(bad))
+    out = _rewrite(writer, verified=A2_VERIFIED, evidence=A2_EVIDENCE,
+                   question="¿Qué productos de la tienda T01 están por debajo del punto de reorden?")
+    assert not out.generated and out.answer == A2_VERIFIED and out.fallback_reason == "validacion_fallida"

@@ -131,3 +131,20 @@ def test_app_starts_with_llm_enabled_and_no_ollama():
     out = subprocess.run([sys.executable, "-c", code], env=env, check=True, capture_output=True, text=True).stdout
     result = json.loads(out.strip().splitlines()[-1])
     assert result == {"status": "answered", "reason": "ollama_no_disponible", "ok": True}
+
+
+@pytest.mark.parametrize("field,value", [("prompt_eval_count", "abc"), ("eval_count", []), ("eval_count", -3)])
+def test_malformed_ollama_counters_do_not_cause_http_500(monkeypatch, field, value):
+    reply = ollama_reply("La tienda que más vendió fue Tienda Valle Norte con $2,163,062.36 MXN.")
+    reply[field] = value
+    _install(monkeypatch, reply)
+    response = client.post("/chat", json={"question": "¿Qué tienda vendió más en agosto de 2026?"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "answered"
+    assert data["answer"].startswith("Ventas netas por tienda") and "$2,163,062.36 MXN" in data["answer"]
+    assert data["evidence"][0]["source"] == "ventas.csv"
+    m = data["metrics"]
+    assert m["generated"] is False and m["fallback_reason"] == "respuesta_invalida"
+    assert (m["llm_calls"], m["total_tokens"]) == (0, 0) and m["llm_model"] is None
+    assert any("Contador de tokens" in w for w in m["warnings"])
