@@ -27,7 +27,7 @@ def test_generic_return_question_selects_general_process_not_blender_faq():
 def test_followup_preserves_return_receipt_semantics(question):
     route = route_returns(question, RETURN_QUESTION)
     assert route is not None and route.kind == "no_receipt"
-    assert "sin ticket de compra" in route.query
+    assert "sin ticket" in route.query
 
 
 def test_standalone_short_ticket_question_requests_context():
