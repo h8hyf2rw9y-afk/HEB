@@ -42,7 +42,7 @@ def looks_like_data(question: str) -> bool:
     if POLICY_HINT.search(q) and not re.search(r"\b(ventas|vendimos|vendio|facturacion|stock|inventario|tickets)\b", q):
         return False
     return bool(DATA_WORDS.search(q) and (ANALYTIC_HINT.search(q) or
-        re.search(r"\b(inventario|existencias|stock|tickets|facturacion|ventas)\b", q)))
+        re.search(r"\b(inventario|existencias|stock|tickets|facturacion|ventas|reorden|agotad[oa]s?)\b", q)))
 
 
 @dataclass(frozen=True)
@@ -126,8 +126,42 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
         # The snapshot is not a historical inventory series.
         if any(month in q for month in MONTHS):
             return _missing(question, "Solo existe un corte de inventario al 1 de septiembre de 2026.")
+        # When the question asks which items need replenishment, provide
+        # individual SKUs and quantities rather than just a summary count.
+        listing = bool(re.search(r"\b(que|cuales|lista|listar|detalle|productos|sku)\b", q)) and (
+            "reorden" in q or "agotad" in q or "surtir" in q
+        )
+        params = [str(inventory), str(stores), str(products)]
+        where = "WHERE i.existencia <= i.punto_reorden" if "reorden" in q or "surtir" in q else "WHERE i.existencia = 0"
+        if listing:
+            if store_id:
+                where += " AND i.tienda_id = ?"
+                params.append(store_id)
+            sql = f"""
+                SELECT t.nombre, i.sku, p.nombre, i.existencia, i.punto_reorden
+                FROM read_csv_auto(?) i
+                JOIN read_csv_auto(?) t ON t.tienda_id = i.tienda_id
+                JOIN read_csv_auto(?) p ON p.sku = i.sku
+                {where}
+                ORDER BY t.nombre, i.sku LIMIT 30
+            """
+            with duckdb.connect() as con:
+                rows = con.execute(sql, params).fetchall()
+            if not rows:
+                return _missing(question, "No hay productos que cumplan la condición para esa tienda.")
+            lines = [
+                f"{store} · {sku} · {name}: existencia {current}, punto de reorden {threshold}."
+                for store, sku, name, current, threshold in rows
+            ]
+            return AnalyticalAnswer(
+                "Inventario al 1 de septiembre de 2026 (máximo 30 resultados):\n" + "\n".join(lines),
+                "answered", [_source("inventario.csv", "corte 2026-09-01"),
+                             _source("catalogo_productos.csv", "sku"),
+                             _source("tiendas.csv", "tienda_id")], "inventory",
+            )
         sql = """
-            SELECT t.nombre, count(*) AS productos, sum(CASE WHEN i.existencia <= i.punto_reorden THEN 1 ELSE 0 END) AS bajo_reorden,
+            SELECT t.nombre, count(*) AS productos,
+                   sum(CASE WHEN i.existencia <= i.punto_reorden THEN 1 ELSE 0 END) AS bajo_reorden,
                    sum(CASE WHEN i.existencia = 0 THEN 1 ELSE 0 END) AS agotados
             FROM read_csv_auto(?) i
             JOIN read_csv_auto(?) t ON t.tienda_id = i.tienda_id
@@ -139,10 +173,14 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
             rows = [row for row in rows if row[0] == store_name]
         if not rows:
             return _missing(question, "El inventario no contiene registros para esa tienda.")
-        lines = [f"{store}: {low} SKU en o por debajo del punto de reorden; {zero} sin existencia (de {total} SKU)." for store, total, low, zero in rows]
+        lines = [
+            f"{store}: {low} SKU en o por debajo del punto de reorden; {zero} sin existencia (de {total} SKU)."
+            for store, total, low, zero in rows
+        ]
         return AnalyticalAnswer(
             "Inventario al 1 de septiembre de 2026:\n" + "\n".join(lines),
-            "answered", [_source("inventario.csv", "corte 2026-09-01"), _source("tiendas.csv", "tienda_id")], "inventory",
+            "answered", [_source("inventario.csv", "corte 2026-09-01"),
+                         _source("tiendas.csv", "tienda_id")], "inventory",
         )
 
     if re.search(r"\b(ticket|tickets|incidencias|mesa de servicio)\b", q):
