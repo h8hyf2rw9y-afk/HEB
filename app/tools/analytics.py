@@ -84,13 +84,13 @@ def _requested_store(question: str, stores_path: Path) -> tuple[str | None, str 
         code = store["tienda_id"].lower()
         full = plain(store["nombre"])
         short = full.removeprefix("tienda ")
-        if re.search(rf"\\b{re.escape(code)}\\b", q) or full in q or short in q:
+        if re.search(rf"\b{re.escape(code)}\b", q) or full in q or short in q:
             matches.append(store)
     if len(matches) == 1:
         return matches[0]["tienda_id"], matches[0]["nombre"]
     if len(matches) > 1:
         return "ambiguous", None
-    if re.search(r"\\bt\\d{2}\\b", q):
+    if re.search(r"\bt\d{2}\b", q):
         return "unknown", None
     return None, None
 
@@ -114,7 +114,7 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     products = data_dir / "catalogo_productos.csv"
     inventory = data_dir / "inventario.csv"
     tickets = data_dir / "tickets_mesa_servicio.csv"
-    if re.search(r"\\b(precio|precios|cuesta|costo|costos|salario|nomina)\\b", q):
+    if re.search(r"\b(precio|precios|cuesta|costo|costos|salario|nomina)\b", q):
         return _missing(question, "Esa métrica no está implementada en las consultas analíticas de esta primera versión.")
     store_id, store_name = _requested_store(question, stores)
     if store_id in ("ambiguous", "unknown"):
