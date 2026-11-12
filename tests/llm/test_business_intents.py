@@ -70,3 +70,27 @@ def test_policy_questions_not_misclassified_as_documents_list():
         "¿Qué información establece el procedimiento de devoluciones sobre el plazo?",
     ]:
         assert route_business_question(q) is None
+
+@pytest.mark.parametrize("question", [
+    "¿Qué opinas de despedir a alguien por faltar dos semanas?",
+    "¿Qué puedo hacer si un empleado faltó ayer y quiero sancionarlo?",
+    "¿Qué procede si el colaborador está incapacitado desde hace un mes?",
+])
+def test_employment_decision_requires_policy_context_not_free_llm(question, monkeypatch):
+    monkeypatch.setattr(main, "search_policies", lambda *a, **kw: pytest.fail("No unrelated PDF"))
+    monkeypatch.setattr(main, "generate_general_answer", lambda *a, **kw: pytest.fail("No free LLM for employment decisions"))
+    result = client.post("/chat", json={"question": question}).json()
+    assert result["status"] == "needs_clarification"
+    assert result["evidence"] == []
+    assert "Recursos Humanos" in result["answer"]
+    assert result["metrics"]["answer_mode"] == "needs_context"
+
+
+def test_conversation_id_does_not_imply_back_end_memory():
+    # The current contract accepts a conversation ID, but no history is stored
+    # or passed to the model and each query must be independently grounded.
+    first = client.post("/chat", json={"question": "¿Cuántas tiendas tengo?", "conversation_id": "demo-id"}).json()
+    second = client.post("/chat", json={"question": "¿Y de esas cuáles son mejores?", "conversation_id": "demo-id"}).json()
+    assert first["status"] == "answered"
+    assert "4 tiendas" in first["answer"]
+    assert "4 tiendas" not in second["answer"]
