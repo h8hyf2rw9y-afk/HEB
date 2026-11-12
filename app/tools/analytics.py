@@ -5,6 +5,7 @@ Unknown or ambiguous data questions abstain instead of inventing figures.
 """
 from __future__ import annotations
 
+import csv
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -71,6 +72,29 @@ def _period(question: str) -> tuple[str | None, str | None, str]:
     return "2026-06-01", "2026-09-01", "junio–agosto de 2026"
 
 
+def _requested_store(question: str, stores_path: Path) -> tuple[str | None, str | None]:
+    """Match explicitly named stores against the supplied store catalogue."""
+    q = plain(question)
+    if not stores_path.is_file():
+        return None, None
+    with stores_path.open(encoding="utf-8-sig", newline="") as f:
+        known = list(csv.DictReader(f))
+    matches = []
+    for store in known:
+        code = store["tienda_id"].lower()
+        full = plain(store["nombre"])
+        short = full.removeprefix("tienda ")
+        if re.search(rf"\\b{re.escape(code)}\\b", q) or full in q or short in q:
+            matches.append(store)
+    if len(matches) == 1:
+        return matches[0]["tienda_id"], matches[0]["nombre"]
+    if len(matches) > 1:
+        return "ambiguous", None
+    if re.search(r"\\bt\\d{2}\\b", q):
+        return "unknown", None
+    return None, None
+
+
 def _missing(question: str, reason: str) -> AnalyticalAnswer:
     return AnalyticalAnswer(
         "No puedo obtener una cifra confiable de los CSV para esa pregunta. " + reason,
@@ -90,6 +114,9 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     products = data_dir / "catalogo_productos.csv"
     inventory = data_dir / "inventario.csv"
     tickets = data_dir / "tickets_mesa_servicio.csv"
+    store_id, store_name = _requested_store(question, stores)
+    if store_id in ("ambiguous", "unknown"):
+        return _missing(question, "No se identificó una sola tienda válida del catálogo.")
 
     if re.search(r"\b(inventario|existencias|existencia|stock|reorden|surtir|agotad[oa]s?)\b", q):
         if not all(path.is_file() for path in (inventory, stores, products)):
@@ -106,8 +133,10 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
         """
         with duckdb.connect() as con:
             rows = con.execute(sql, [str(inventory), str(stores)]).fetchall()
+        if store_name:
+            rows = [row for row in rows if row[0] == store_name]
         if not rows:
-            return _missing(question, "El inventario no contiene registros.")
+            return _missing(question, "El inventario no contiene registros para esa tienda.")
         lines = [f"{store}: {low} SKU en o por debajo del punto de reorden; {zero} sin existencia (de {total} SKU)." for store, total, low, zero in rows]
         return AnalyticalAnswer(
             "Inventario al 1 de septiembre de 2026:\n" + "\n".join(lines),
@@ -127,8 +156,10 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
         """
         with duckdb.connect() as con:
             rows = con.execute(sql, [str(tickets), str(stores)]).fetchall()
+        if store_name:
+            rows = [row for row in rows if row[0] == store_name]
         if not rows:
-            return _missing(question, "No hay registros de tickets.")
+            return _missing(question, "No hay registros de tickets para esa tienda.")
         lines = [f"{store}: {total} tickets, {pending} pendientes y {critical} críticos pendientes." for store, total, pending, critical in rows]
         return AnalyticalAnswer(
             "Tickets en el conjunto de datos:\n" + "\n".join(lines),
@@ -158,6 +189,8 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     group = ("p.nombre" if by_product else "p.categoria" if by_category else
              "v.canal" if by_channel else "t.nombre" if by_store else None)
     group_name = "producto" if by_product else "categoría" if by_category else "canal" if by_channel else "tienda"
+    if store_id and not ranking and not re.search(r"\\b(por tienda|por sucursal|cada tienda|cada sucursal)\\b", q):
+        group = None
     if ranking and group is None:
         return _missing(question, "Indica si deseas comparar tiendas, productos, categorías o canales.")
 
@@ -169,13 +202,16 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     if join_products:
         params.append(str(products))
     params.extend([start, end])
+    store_filter = " AND v.tienda_id = ?" if store_id else ""
+    if store_id:
+        params.append(store_id)
     if group:
         direction = "ASC" if ascending else "DESC"
         sql = f"""
             SELECT {group} AS nombre, SUM({measure}) AS valor
             FROM read_csv_auto(?) v JOIN read_csv_auto(?) t ON v.tienda_id = t.tienda_id
             {join}
-            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE)
+            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE){store_filter}
             GROUP BY 1 ORDER BY valor {direction}, nombre ASC LIMIT 5
         """
     else:
@@ -183,7 +219,7 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
             SELECT SUM({measure}) AS valor
             FROM read_csv_auto(?) v JOIN read_csv_auto(?) t ON v.tienda_id = t.tienda_id
             {join}
-            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE)
+            WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE){store_filter}
         """
     with duckdb.connect() as con:
         rows = con.execute(sql, params).fetchall()
@@ -196,7 +232,8 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
         lines = [f"{n}. {name}: {display(value)}" for n, (name, value) in enumerate(rows, start=1)]
         answer = f"{metric_label.capitalize()} por {group_name} ({period}), {'menor a mayor' if ascending else 'mayor a menor'}:\n" + "\n".join(lines)
     else:
-        answer = f"Total de {metric_label} ({period}): {display(rows[0][0])}."
+        scope = f" · {store_name}" if store_name else ""
+        answer = f"Total de {metric_label} ({period}{scope}): {display(rows[0][0])}."
     evidence = [_source("ventas.csv", period), _source("tiendas.csv", "tienda_id")]
     if join_products:
         evidence.append(_source("catalogo_productos.csv", "sku"))
