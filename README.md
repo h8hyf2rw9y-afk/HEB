@@ -18,6 +18,7 @@ The stack is a proposal pending validation against the full assignment brief. Th
 - [API/tool contracts](docs/CONTRACTS.md)
 - [Decision log](docs/DECISIONS.md)
 - [Handoff guide](docs/HANDOFF.md)
+- [Local Git worktrees setup](docs/WORKTREES.md)
 - [Codex instructions](AGENTS.md)
 - [Claude Code instructions](CLAUDE.md)
 
