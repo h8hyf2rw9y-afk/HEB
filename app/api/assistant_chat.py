@@ -36,7 +36,7 @@ def classify_assistant_question(question: str) -> str | None:
 
     A greeting combined with a health question takes precedence over greeting.
     """
-    q = _plain(question).strip()
+    q = _plain(question).strip().strip(" ¡!¿?.,;:")
     if _OLLAMA.search(q) and (_CONNECTION.search(q) or "estas" in q or "esta" in q):
         return "ollama_status"
     if _OLLAMA.search(q) and (_MODEL.search(q) or re.search(r"\b(tienes|usas|utilizas|habilitado|instalado)\b", q)):
