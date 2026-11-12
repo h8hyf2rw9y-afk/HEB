@@ -102,11 +102,31 @@ def render_metrics(metrics: object) -> None:
 def llm_summary(metrics: dict) -> str:
     """One line that says who wrote the answer, with real counters."""
     if metrics.get("generated"):
+        grounded = metrics.get("answer_mode") in {"grounded_data", "grounded_policy"}
+        suffix = (
+            "Redacción validada contra los datos o documentos disponibles."
+            if grounded else
+            "Conversación general: no se consultaron CSV ni políticas; respuesta no verificada."
+        )
         return (f'Redactada por {metrics.get("llm_model")} en {metrics.get("generation_latency_ms", 0)} ms '
                 f'({metrics.get("input_tokens", 0)} tokens de entrada, {metrics.get("output_tokens", 0)} de salida). '
-                "Cifras y citas verificadas contra la evidencia.")
+                + suffix)
     reason = metrics.get("fallback_reason") or "sin modelo"
     return f"Respuesta determinista (sin redacción del modelo): {reason}."
+
+
+def answer_origin_notice(metrics: object) -> str | None:
+    """Make the lack of enterprise sources visible outside the metrics expander."""
+    if not isinstance(metrics, dict):
+        return None
+    mode = metrics.get("answer_mode")
+    if mode == "general_unverified":
+        return "Conversación general: respuesta sin consultar ni verificar fuentes de H-E-B."
+    if mode == "needs_context":
+        return "Orientación para precisar tu consulta; no se encontró una política laboral aplicable."
+    if mode == "assistant_info":
+        return "Información sobre el asistente; no se consultaron datos o políticas."
+    return None
 
 
 def main() -> None:
@@ -137,6 +157,7 @@ def main() -> None:
 
     st.subheader("Consultas")
     st.caption("Pregunta por las ventas de junio a agosto de 2026, el inventario, los tickets o las políticas internas.")
+    st.caption("Cada consulta es independiente: no se conserva contexto ni historial en el backend. Para un seguimiento, incluye nuevamente el contexto necesario.")
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if st.button("Nueva conversación"):
@@ -149,6 +170,9 @@ def main() -> None:
             if message["role"] == "assistant":
                 if message.get("status") not in (None, "answered"):
                     st.caption(f'Estado: {message["status"]}')
+                notice = answer_origin_notice(message.get("metrics"))
+                if notice:
+                    st.caption(notice)
                 render_evidence(cited_evidence(message.get("evidence"), message["content"]))
                 render_metrics(message.get("metrics"))
 
@@ -166,6 +190,9 @@ def main() -> None:
                 st.markdown(display_answer(answer))
                 if result.get("status") != "answered":
                     st.caption(f'Estado: {result.get("status", "desconocido")}')
+                notice = answer_origin_notice(result.get("metrics"))
+                if notice:
+                    st.caption(notice)
                 render_evidence(cited_evidence(result.get("evidence"), answer))
                 render_metrics(result.get("metrics"))
                 st.session_state.messages.append({
