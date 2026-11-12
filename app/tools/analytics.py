@@ -68,7 +68,7 @@ def _period(question: str) -> tuple[str | None, str | None, str]:
         return None, None, "multiple"
     if found:
         key = found[0]
-        return MONTHS[key] + "-01", {"junio": "2026-07-01", "julio": "2026-08-01", "agosto": "2026-09-01"}[key], key
+        return MONTHS[key] + "-01", {"junio": "2026-07-01", "julio": "2026-08-01", "agosto": "2026-09-01"}[key], key + " de 2026"
     return "2026-06-01", "2026-09-01", "junio–agosto de 2026"
 
 
