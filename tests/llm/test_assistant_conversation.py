@@ -95,3 +95,12 @@ def test_status_probe_does_not_claim_connectivity_on_error(monkeypatch):
     monkeypatch.setattr(assistant_chat.httpx, "Client", make_client)
     health = assistant_chat.check_ollama(LLMSettings())
     assert health == {"reachable": False, "model_available": False}
+
+@pytest.mark.parametrize("question", [
+    "¿Qué puedes hacer con un empleado que no vino al turno?",
+    "¿Qué puedes hacer cuando el personal no asiste?",
+    "¿Quién eres para decidir sobre un despido?",
+    "¿Qué modelo usas para calcular las ventas de mi tienda?",
+])
+def test_business_phrasing_never_gets_assistant_meta_intent(question):
+    assert assistant_chat.classify_assistant_question(question) is None
