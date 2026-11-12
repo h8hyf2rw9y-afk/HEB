@@ -89,9 +89,24 @@ def render_metrics(metrics: object) -> None:
         return
     with st.expander("Métricas de la consulta"):
         a, b, c = st.columns(3)
-        a.metric("Latencia", f'{metrics.get("latency_ms", 0)} ms')
+        a.metric("Latencia total", f'{metrics.get("latency_ms", 0)} ms')
         b.metric("Llamadas LLM", str(metrics.get("llm_calls", 0)))
-        c.metric("Tokens", str(metrics.get("total_tokens", 0)))
+        c.metric("Tokens LLM", f'{metrics.get("input_tokens", 0)} + {metrics.get("output_tokens", 0)}')
+        st.caption(llm_summary(metrics))
+        if metrics.get("embedding_calls"):
+            st.caption(f'Embeddings: {metrics["embedding_calls"]} llamadas · {metrics.get("embedding_input_tokens", 0)} tokens')
+        for warning in metrics.get("warnings") or []:
+            st.caption(f"⚠ {warning}")
+
+
+def llm_summary(metrics: dict) -> str:
+    """One line that says who wrote the answer, with real counters."""
+    if metrics.get("generated"):
+        return (f'Redactada por {metrics.get("llm_model")} en {metrics.get("generation_latency_ms", 0)} ms '
+                f'({metrics.get("input_tokens", 0)} tokens de entrada, {metrics.get("output_tokens", 0)} de salida). '
+                "Cifras y citas verificadas contra la evidencia.")
+    reason = metrics.get("fallback_reason") or "sin modelo"
+    return f"Respuesta determinista (sin redacción del modelo): {reason}."
 
 
 def main() -> None:

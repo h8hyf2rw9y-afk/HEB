@@ -9,12 +9,15 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.data.catalog import build_catalog
+from app.llm import GroundedWriter, LLMSettings
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
 from app.tools.analytics import answer_data_question, looks_like_data
 
-app = FastAPI(title="HEB AI Assistant", version="0.2.0")
+app = FastAPI(title="HEB AI Assistant", version="0.3.0")
 CATALOG = build_catalog(Path(__file__).resolve().parents[2] / "candidatos" / "datos")
+LLM_SETTINGS = LLMSettings.from_env()
+WRITER = GroundedWriter(LLM_SETTINGS)
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
@@ -22,12 +25,19 @@ class ChatRequest(BaseModel):
 
 
 class Metrics(BaseModel):
+    # Generative model (Ollama /api/chat): real counters prompt_eval_count / eval_count.
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
     llm_calls: int = 0
+    llm_model: str | None = None
+    generation_latency_ms: float = 0
+    generated: bool = False  # True when the shown answer was written by the model
+    fallback_reason: str | None = None  # why the deterministic answer was kept
+    # Whole request, including retrieval/SQL and generation.
     latency_ms: float = 0
     retrieval_mode: str | None = None
+    # Embeddings (Ollama /api/embed), counted separately from the generative model.
     embedding_calls: int = 0
     embedding_input_tokens: int = 0
     embedding_latency_ms: float = 0
@@ -63,6 +73,17 @@ def health_rag() -> dict:
     return rag_health()
 
 
+@app.get("/health/llm")
+def health_llm() -> dict:
+    """Generative layer configuration (never calls Ollama)."""
+    return {
+        "enabled": LLM_SETTINGS.enabled,
+        "model": LLM_SETTINGS.model,
+        "base_url": LLM_SETTINGS.base_url,
+        "timeout_s": LLM_SETTINGS.timeout_s,
+    }
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     start = time.perf_counter()
@@ -83,11 +104,26 @@ def chat(request: ChatRequest) -> ChatResponse:
                 status="error",
                 metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
             )
+        outcome = WRITER.rewrite(
+            question=question, kind="datos", status=result.status,
+            verified_answer=result.answer, evidence=result.evidence,
+        )
         return ChatResponse(
-            answer=result.answer,
+            answer=outcome.answer,
             status=result.status,
             evidence=result.evidence,
-            metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+            metrics=Metrics(
+                input_tokens=outcome.input_tokens,
+                output_tokens=outcome.output_tokens,
+                total_tokens=outcome.total_tokens,
+                llm_calls=outcome.llm_calls,
+                llm_model=outcome.model if outcome.llm_calls else None,
+                generation_latency_ms=outcome.generation_latency_ms,
+                generated=outcome.generated,
+                fallback_reason=outcome.fallback_reason,
+                latency_ms=round((time.perf_counter() - start) * 1000, 2),
+                warnings=outcome.warnings,
+            ),
         )
 
     # The RAG boundary handles index absence and search failures as status='error'.
@@ -99,22 +135,32 @@ def chat(request: ChatRequest) -> ChatResponse:
         )
     result = search_policies(PolicySearchRequest(query=question, top_k=5))
     rag_metrics = result.metrics
+    evidence = [item.to_http_evidence() for item in result.evidence]
+    conflicts = [item.model_dump() for item in result.conflicts]
+    outcome = WRITER.rewrite(
+        question=question, kind="politicas", status=result.status,
+        verified_answer=result.answer, evidence=evidence, conflicts=conflicts,
+    )
     return ChatResponse(
-        answer=result.answer,
+        answer=outcome.answer,
         status=result.status,
-        evidence=[item.to_http_evidence() for item in result.evidence],
-        conflicts=[item.model_dump() for item in result.conflicts],
+        evidence=evidence,
+        conflicts=conflicts,
         metrics=Metrics(
-            input_tokens=rag_metrics.input_tokens,
-            output_tokens=rag_metrics.output_tokens,
-            total_tokens=rag_metrics.input_tokens + rag_metrics.output_tokens,
-            llm_calls=rag_metrics.llm_calls,
+            input_tokens=rag_metrics.input_tokens + outcome.input_tokens,
+            output_tokens=rag_metrics.output_tokens + outcome.output_tokens,
+            total_tokens=rag_metrics.input_tokens + rag_metrics.output_tokens + outcome.total_tokens,
+            llm_calls=rag_metrics.llm_calls + outcome.llm_calls,
+            llm_model=outcome.model if outcome.llm_calls else None,
+            generation_latency_ms=outcome.generation_latency_ms,
+            generated=outcome.generated,
+            fallback_reason=outcome.fallback_reason,
             latency_ms=round((time.perf_counter() - start) * 1000, 2),
             retrieval_mode=rag_metrics.retrieval_mode,
             embedding_calls=rag_metrics.embedding_calls,
             embedding_input_tokens=rag_metrics.embedding_input_tokens,
             embedding_latency_ms=rag_metrics.embedding_latency_ms,
-            warnings=rag_metrics.warnings,
+            warnings=rag_metrics.warnings + outcome.warnings,
         ),
     )
 
