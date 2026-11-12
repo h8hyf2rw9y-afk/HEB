@@ -67,9 +67,6 @@ def test_demo_a3_critical_open_tickets_match_independent_csv_count():
     response = answer_data_question(
         "¿Cuántos tickets de prioridad Crítica siguen abiertos y de qué tiendas son?", DATA
     )
-    if not expected:
-        assert response.status == "insufficient_data"
-        return
     assert response.status == "answered"
     assert f"Total: {sum(expected.values())} tickets." in response.answer
     for store_id, count in expected.items():
