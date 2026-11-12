@@ -1,7 +1,6 @@
 """FastAPI entry points for structured queries and grounded policy answers."""
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Literal
@@ -15,18 +14,7 @@ from app.tools.structured import StructuredRequest, query_dataset
 from app.tools.analytics import answer_data_question, looks_like_data
 
 app = FastAPI(title="HEB AI Assistant", version="0.2.0")
-CATALOG = build_catalog(Path("candidatos/datos"))
-
-# Explicit, conservative routing: structured sales questions are not sent to policy RAG.
-_POLICY_TERMS = re.compile(
-    r"\b(?:pol[ií]tica(?:s)?|procedimiento(?:s)?|devoluci[oó]n(?:es)?|"
-    r"devolver|devuelv[oaes]|reembolso(?:s)?|merma(?:s)?|caducidad|"
-    r"caduc[oa]s?|apertura|abrir\s+(?:la\s+)?tienda|"
-    r"cierre\s+(?:de\s+)?tienda|cerrar\s+(?:la\s+)?tienda|"
-    r"manual(?:es)?|faq|reglamento(?:s)?)\b",
-    re.IGNORECASE,
-)
-
+CATALOG = build_catalog(Path(__file__).resolve().parents[2] / "candidatos" / "datos")
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
