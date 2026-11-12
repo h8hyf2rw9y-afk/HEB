@@ -33,3 +33,6 @@ jobs:
           python -m pip install -r requirements.txt
       - name: Verify backend and RAG tests
         run: python -m pytest tests/backend tests/rag -q
+
+      - name: Reproduce three analytical demo answers
+        run: python scripts/demo_analytics.py
