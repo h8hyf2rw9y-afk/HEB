@@ -6,6 +6,7 @@ The API is started separately: uvicorn app.api.main:app --reload
 from __future__ import annotations
 
 import os
+import re
 
 import httpx
 import streamlit as st
@@ -41,6 +42,32 @@ def send_question(base_url: str, question: str) -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("answer"), str):
         raise ValueError("Respuesta inesperada del backend.")
     return data
+
+
+def display_answer(answer: str) -> str:
+    """Separate policy warnings from Markdown list items in Streamlit."""
+    return re.sub(r"(?<!\n)\n(?=[⚠ℹ])", "\n\n", answer)
+
+
+def cited_evidence(evidence: object, answer: str) -> list[dict]:
+    """Display only cited policy passages; CSV tables are always query sources."""
+    if not isinstance(evidence, list):
+        return []
+    result = []
+    seen = set()
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or item.get("document") or "")
+        reference = str(item.get("reference") or "")
+        if item.get("source_type") == "pdf":
+            if f"[{source}, {reference}]" not in answer:
+                continue
+        key = (source, reference)
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
 
 
 def render_evidence(evidence: object) -> None:
@@ -87,14 +114,14 @@ def main() -> None:
 
     if page == "Fuentes de datos":
         st.subheader("Fuentes de datos")
-        st.info("La carga de Excel, CSV, ZIP y PDF estará disponible en una fase posterior. Esta versión no almacena ni procesa archivos.")
+        st.info("Los CSV sintéticos se consultan localmente desde candidatos/datos y las políticas desde el índice RAG.")
         st.markdown("**Flujo previsto:** seleccionar periodo → revisar archivos → validar esquema y vista previa → confirmar importación → consultar versión activa.")
         st.markdown("**Formatos previstos:** Excel (.xlsx), CSV, PDF y ZIP. El soporte se implementará cuando existan endpoints seguros de ingestión.")
         st.caption("Por ahora, la carga e indexación se preparan localmente mediante los procesos del backend.")
         return
 
     st.subheader("Consultas")
-    st.caption("El backend actual puede responder que la integración conversacional todavía no está disponible. La interfaz mostrará ese estado sin inventar resultados.")
+    st.caption("Pregunta por las ventas de junio a agosto de 2026, el inventario, los tickets o las políticas internas.")
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if st.button("Nueva conversación"):
@@ -103,14 +130,14 @@ def main() -> None:
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+            st.markdown(display_answer(message["content"]))
             if message["role"] == "assistant":
                 if message.get("status") not in (None, "answered"):
                     st.caption(f'Estado: {message["status"]}')
-                render_evidence(message.get("evidence"))
+                render_evidence(cited_evidence(message.get("evidence"), message["content"]))
                 render_metrics(message.get("metrics"))
 
-    question = st.chat_input("Ej. ¿Qué tienda vendió más este mes?", disabled=not connected)
+    question = st.chat_input("Ej. ¿Qué tienda vendió más en agosto de 2026?", disabled=not connected)
     if not question:
         return
     st.session_state.messages.append({"role": "user", "content": question})
@@ -121,10 +148,10 @@ def main() -> None:
             try:
                 result = send_question(base_url.rstrip("/"), question)
                 answer = result["answer"]
-                st.markdown(answer)
+                st.markdown(display_answer(answer))
                 if result.get("status") != "answered":
                     st.caption(f'Estado: {result.get("status", "desconocido")}')
-                render_evidence(result.get("evidence"))
+                render_evidence(cited_evidence(result.get("evidence"), answer))
                 render_metrics(result.get("metrics"))
                 st.session_state.messages.append({
                     "role": "assistant", "content": answer,
