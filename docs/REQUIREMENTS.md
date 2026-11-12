@@ -1,29 +1,30 @@
-# Requirements and verification
+# Requisitos y verificación
 
-**Status: provisional.** This document summarizes the project goals discussed with the user. The agents MUST inspect the original assignment brief, FAQ, and data dictionary before marking any requirement as confirmed. Do not invent deadlines, acceptance thresholds, or exact question lists.
+**El estado actual frente al brief está en [`COMPLIANCE.md`](COMPLIANCE.md)**, la matriz requisito → implementación → evidencia → estado. Este archivo resume los objetivos y se mantiene solo como índice.
 
-## Functional goals
-- [ ] Answer Spanish-language questions about store sales using actual structured data.
-- [ ] Answer inventory and replenishment questions with the correct inventory snapshot date.
-- [ ] Analyze service tickets using verified records.
-- [ ] Answer questions about operational policies using cited PDF evidence (document and page).
-- [ ] Identify conflicting policy passages, apply documented precedence when justified, and disclose uncertainty.
-- [ ] Refuse to invent missing figures, policy terms, or current data when only historical snapshots exist.
+Fuente: [`../candidatos/BRIEF.md`](../candidatos/BRIEF.md) y [`../candidatos/datos/diccionario_datos.md`](../candidatos/datos/diccionario_datos.md). No se inventan plazos, umbrales ni listas de preguntas que no estén en el brief.
 
-## Technical goals
-- [ ] Separate UI, API, query tools, document retrieval, and LLM orchestration.
-- [ ] Use validated, read-only deterministic queries for calculations.
-- [ ] Validate LLM tool-call parameters.
-- [ ] Track input/output tokens, latency, number of model calls, and tool paths for each question.
-- [ ] Include deterministic regression tests and a representative question evaluation set.
-- [ ] Document setup, reproducibility, limitations, and model/runtime requirements.
+## Objetivos funcionales (estado al 2026-11-12)
+- [x] Preguntas en español sobre ventas con datos reales (DuckDB, h8hyf2rw9y-afk/HEB#11), dentro de un catálogo acotado.
+- [x] Inventario y reabasto con la fecha de corte correcta (2026-09-01).
+- [x] Conteos de tickets de la mesa de servicio por prioridad, estado y tienda. Sin análisis del texto libre.
+- [x] Políticas con evidencia citada: documento, página y sección.
+- [x] Detección de contradicciones y precedencia solo cuando la fuente la declara. Hay dos inconsistencias sin detectar, documentadas en `LIMITATIONS.md`.
+- [x] No inventar cifras: SQL fijo y citas textuales. Puede mostrar cifras reales que no responden a una pregunta mal enrutada (`LIMITATIONS.md` §2).
 
-## Deliverables to verify against original brief
-- [ ] Exact required questions and expected response format.
-- [ ] Deployment/offline execution requirements and permitted model/provider.
-- [ ] Token-reporting format and any required cost calculations.
-- [ ] Video, written report, repository and test requirements.
-- [ ] Applicable submission deadline and data-sharing restrictions.
+## Objetivos técnicos
+- [x] Separación UI / API / herramientas / RAG; sin capa LLM, por decisión (ADR-010).
+- [x] Consultas deterministas y de solo lectura (motor DuckDB en lista blanca).
+- [x] Validación de parámetros con Pydantic.
+- [x] Tokens, latencia y llamadas por pregunta (0 tokens, sin LLM). La ruta no se expone explícitamente.
+- [x] Pruebas deterministas y conjunto de evaluación representativo (políticas).
+- [x] Documentación de instalación, reproducibilidad y limitaciones (`README.md`, `LIMITATIONS.md`).
 
-## Source data
-Original CSV/PDF files should remain local or in approved private storage until sharing rights are confirmed. Do not add raw data to GitHub automatically.
+## Entregables del brief
+- [ ] README que corre en < 10 min: medido en Linux (≈ 1 min) y con instalación y pruebas en Windows (CI); falta cronometrar el arranque en un Windows real.
+- [ ] `plantilla_decisiones.md`: borrador en `DECISIONES_BORRADOR.md`; lo completa la persona que entrega.
+- [ ] Video de 3–5 min: guion con salidas reales en `DEMO_SCRIPT.md`; pendiente de grabar.
+- [ ] Envío: fecha del brief, 25 de septiembre de 2026; ⚠️ confirmar si sigue vigente.
+
+## Datos de origen
+Los CSV y PDF de `candidatos/` son sintéticos y vienen con el ejercicio. Los datos privados y los índices generados no se suben (`.gitignore`).
