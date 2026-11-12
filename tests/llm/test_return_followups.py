@@ -132,3 +132,34 @@ def test_no_receipt_full_question_uses_verified_faq(monkeypatch):
     assert "vale de tienda" in data["answer"]
     assert data["evidence"][0]["source"] == "faq_gerentes_de_tienda.pdf"
     assert data["metrics"]["generated"] is False
+
+
+def test_real_pdfs_without_ticket_cannot_resolve_as_it_ticket(monkeypatch, tmp_path):
+    """Run actual retrieval over exercise PDFs, not just a mocked policy result."""
+    from pathlib import Path
+    from app.rag.config import RagSettings
+    from app.rag.extraction import discover_pdfs
+    from app.rag.index import PolicyIndex
+    from app.rag.service import reset_retriever
+
+    pdfs = discover_pdfs(Path(__file__).resolve().parents[2] / "candidatos" / "politicas")
+    if len(pdfs) != 4:
+        pytest.skip("The four exercise PDFs are not present")
+    index_path = tmp_path / "index"
+    PolicyIndex.build(pdfs, RagSettings(embeddings="off")).save(index_path)
+    monkeypatch.setenv("HEB_RAG_INDEX_DIR", str(index_path))
+    monkeypatch.setenv("HEB_RAG_EMBEDDINGS", "off")
+    reset_retriever()
+    try:
+        data = client.post("/chat", json={
+            "question": "Si no tiene el ticket",
+            "previous_question": RETURN_QUESTION,
+        }).json()
+        assert data["status"] == "answered", data
+        assert "vale de tienda" in data["answer"]
+        assert "identificación oficial" in data["answer"]
+        assert "manual_apertura_y_cierre_tienda.pdf" not in data["answer"]
+        assert all(item["source"] != "manual_apertura_y_cierre_tienda.pdf"
+                   for item in data["evidence"])
+    finally:
+        reset_retriever()
