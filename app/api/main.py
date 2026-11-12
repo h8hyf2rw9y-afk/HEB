@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.data.catalog import build_catalog
 from app.api.assistant_chat import classify_assistant_question, assistant_answer
+from app.api.business_intents import route_business_question
 from app.llm import GroundedWriter, LLMSettings
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
@@ -103,6 +104,16 @@ def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(
             answer=answer,
             status="answered",
+            metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+        )
+    # Catalog questions and unsupported employment cases need exact, relevant
+    # evidence (or an explicit clarification), not a random policy passage.
+    business_result = route_business_question(question)
+    if business_result is not None:
+        return ChatResponse(
+            answer=business_result.answer,
+            status=business_result.status,
+            evidence=business_result.evidence,
             metrics=Metrics(latency_ms=round((time.perf_counter() - start) * 1000, 2)),
         )
     # Data queries use fixed, parameterized SQL. Everything else goes to the RAG.
