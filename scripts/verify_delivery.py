@@ -1,4 +1,4 @@
-"""Verificación de entrega del asistente H-E-B (independiente del desarrollo de DuckDB).
+"""Verificación de entrega del asistente H-E-B (políticas + datos, de punta a punta).
 
 Uso (Windows PowerShell, macOS o Linux), desde la raíz del repositorio y con el
 entorno virtual del proyecto:
@@ -12,8 +12,10 @@ Qué hace (solo lectura sobre el código; escribe únicamente el índice del RAG
 2. Construye el índice del RAG con los 4 PDF (BM25, sin Ollama).
 3. Llama a la API en proceso (FastAPI TestClient): /health, /health/rag y /chat.
 4. Preguntas de políticas: deben responder con cita verificable (documento y página).
-5. Preguntas analíticas: solo se REPORTA el estado que devuelve hoy la API; no se
-   evalúan ni se marcan como cumplidas (las implementa Codex).
+5. Preguntas analíticas del guion (A1–A3): la respuesta de /chat debe contener las
+   cifras que este script calcula POR SU CUENTA leyendo los CSV con ``csv`` y
+   ``Decimal`` (sin DuckDB ni ``app.tools``), y citar el CSV de origen.
+6. Una pregunta fuera del periodo de los datos (A4) debe abstenerse.
 
 Código de salida: 0 si todo lo implementado funciona; 1 si algo implementado falla.
 """
@@ -51,12 +53,45 @@ POLICY_CHECKS = [
     ("¿A qué hora debe llegar el gerente para la apertura de la tienda?", "answered", "faq_gerentes_de_tienda.pdf"),
     ("¿Cuál es la tolerancia de merma para electrónica?", "insufficient_data", None),
 ]
-# Analytic questions: reported only (pending Codex / PR #11).
-ANALYTIC_PROBES = [
-    "¿Qué tienda vendió más en agosto?",
-    "¿Qué productos de la tienda T01 están por debajo del punto de reorden?",
-    "¿Cuántos tickets críticos siguen abiertos?",
-]
+# Analytic questions used in docs/DEMO_SCRIPT.md (A1–A4).
+A1 = "¿Qué tienda vendió más en agosto de 2026?"
+A2 = "¿Qué productos de la tienda T01 están por debajo del punto de reorden?"
+A3 = "¿Cuántos tickets de prioridad Crítica siguen abiertos y de qué tiendas son?"
+A4 = "¿Cuánto vamos a vender en diciembre?"
+
+
+def _csv(name: str) -> list[dict]:
+    import csv
+
+    with (CSV_DIR / name).open(encoding="utf-8-sig", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def independent_expectations() -> dict[str, list[str]]:
+    """Fragments each analytic answer must contain, computed without DuckDB."""
+    from collections import defaultdict
+    from decimal import Decimal
+
+    stores = {r["tienda_id"]: r["nombre"] for r in _csv("tiendas.csv")}
+    products = {r["sku"]: r["nombre"] for r in _csv("catalogo_productos.csv")}
+    august: dict[str, Decimal] = defaultdict(Decimal)
+    for row in _csv("ventas.csv"):
+        if row["fecha"].startswith("2026-08"):
+            august[row["tienda_id"]] += Decimal(row["venta_neta_mxn"])
+    ranking = sorted(august.items(), key=lambda kv: -kv[1])
+    a1 = [f"{i}. {stores[t]}: ${v:,.2f} MXN" for i, (t, v) in enumerate(ranking, start=1)]
+    low = sorted(
+        (r for r in _csv("inventario.csv")
+         if r["tienda_id"] == "T01" and int(r["existencia"]) < int(r["punto_reorden"])),
+        key=lambda r: r["sku"],
+    )
+    a2 = [f"{r['sku']} · {products[r['sku']]}: existencia {r['existencia']}, punto de reorden {r['punto_reorden']}"
+          for r in low] + ["1 de septiembre de 2026"]
+    pending = [r for r in _csv("tickets_mesa_servicio.csv")
+               if r["prioridad"] == "Crítica" and r["estado"] in ("Abierto", "En proceso")]
+    a3 = [f"Total: {len(pending)} tickets."]
+    return {A1: a1, A2: a2, A3: a3}
+
 
 
 def _ok(flag: bool) -> str:
@@ -92,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         return code
 
     t_start = time.perf_counter()
-    check("Python >= 3.10", sys.version_info >= (3, 10), platform.python_version())
+    check("Python >= 3.11", sys.version_info >= (3, 11), platform.python_version())
 
     missing = []
     for mod in REQUIRED_MODULES:
@@ -103,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     check("Dependencias instaladas", not missing, "faltan: " + ", ".join(missing) if missing else "")
     if missing:
         if not args.json:
-            print("Instala las dependencias (ver README.md, sección Instalación).")
+            print("Instala las dependencias: python -m pip install -r requirements.txt")
         return finish(1)
 
     pdfs = [p for p in EXPECTED_PDFS if not (PDF_DIR / p).is_file()]
@@ -156,15 +191,26 @@ def main(argv: list[str] | None = None) -> int:
         check(f"Política: {question}", passed, f"estado={data.get('status')}")
 
     report["analytics"] = []
-    for question in ANALYTIC_PROBES:
+    expected = independent_expectations()
+    sources = {A1: "ventas.csv", A2: "inventario.csv", A3: "tickets_mesa_servicio.csv"}
+    for question, fragments in expected.items():
         data = client.post("/chat", json={"question": question}).json()
-        report["analytics"].append({"question": question, "status": data.get("status"), "answer": data.get("answer", "")[:200]})
-        check(f"Analítica (solo informativo): {question}", True, f"estado actual={data.get('status')}", counts=False)
+        answer = data.get("answer", "")
+        missing = [f for f in fragments if f not in answer]
+        cited = any(e.get("source") == sources[question] for e in data.get("evidence", []))
+        passed = data.get("status") == "answered" and not missing and cited
+        report["analytics"].append({"question": question, "status": data.get("status"), "ok": passed,
+                                    "missing": missing, "llm_calls": data.get("metrics", {}).get("llm_calls"),
+                                    "total_tokens": data.get("metrics", {}).get("total_tokens")})
+        detail = f"estado={data.get('status')}" + (f"; faltan: {missing}" if missing else "") + ("" if cited else "; sin cita CSV")
+        check(f"Analítica (cifras recalculadas sin DuckDB): {question}", passed, detail)
+    data = client.post("/chat", json={"question": A4}).json()
+    report["analytics"].append({"question": A4, "status": data.get("status"), "ok": data.get("status") == "insufficient_data"})
+    check(f"Analítica fuera de periodo: {A4}", data.get("status") == "insufficient_data", f"estado={data.get('status')}")
 
     report["index_build_seconds"] = round(build_s, 1)
     if not args.json:
         print(f"\nTiempo total de verificación: {round(time.perf_counter() - t_start, 1)} s · fallos: {failures}")
-        print("Las consultas analíticas se reportan sin evaluarlas: dependen del trabajo de Codex (PR #11).")
     return finish(1 if failures else 0)
 
 

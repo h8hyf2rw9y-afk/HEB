@@ -60,23 +60,36 @@ def test_compliance_done_rows_cite_existing_evidence():
     assert problems == []
 
 
+CSV_DIR = ROOT / "candidatos" / "datos"
+
+
 def test_analytics_are_not_marked_done_while_catalog_is_empty():
-    """Guard against marking DuckDB features as done before Codex delivers them."""
+    """Guard: data features can only be marked done if the API's catalog is populated
+    (the API registers the CSVs from candidatos/datos)."""
     from app.data.catalog import build_catalog
 
-    catalog_empty = not build_catalog(ROOT / "data" / "raw") and not build_catalog(ROOT / "candidatos" / "datos")
-    if not catalog_empty:
-        pytest.skip("El catálogo ya tiene datasets: revisar la matriz a mano")
+    if build_catalog(CSV_DIR):
+        assert set(build_catalog(CSV_DIR)) == {"sales", "inventory", "tickets"}
+        return
     text = (ROOT / "docs" / "COMPLIANCE.md").read_text(encoding="utf-8")
     analytic = re.compile(r"ventas\.csv|inventario\.csv|tickets_mesa|cifras salen de los datos", re.IGNORECASE)
     wrongly_done = [r[1][:60] for r in _rows(text) if analytic.search(" ".join(r)) and r[-1].startswith("✅")]
     assert wrongly_done == []
 
 
+def test_api_uses_the_exercise_csvs():
+    pytest.importorskip("fastapi")
+    from app.api import main
+
+    assert {spec.csv_path.parent.resolve() for spec in main.CATALOG.values()} == {CSV_DIR.resolve()}
+
+
 def test_readme_commands_reference_existing_files():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    for ref in ("app/rag/requirements.txt", "frontend/requirements.txt", "candidatos/politicas",
-                "frontend/app.py", "scripts/verify_delivery.py"):
+    assert "pip install -r requirements.txt" in readme
+    assert (ROOT / "requirements.txt").read_text(encoding="utf-8").strip(), "requirements.txt vacío"
+    for ref in ("requirements.txt", "candidatos/politicas", "frontend/app.py",
+                "scripts/verify_delivery.py", "scripts/demo_analytics.py"):
         assert ref in readme.replace("\\", "/"), ref
         assert (ROOT / ref).exists(), ref
     assert importlib.util.find_spec("app.api.main") is not None
@@ -91,6 +104,8 @@ def test_verify_script_questions_are_the_demo_questions():
     for question, _status, _doc in module.POLICY_CHECKS:
         if "apertura" in question:  # in README/TOKEN_COSTS, not in the video
             continue
+        assert question in demo, question
+    for question in (module.A1, module.A2, module.A3, module.A4):
         assert question in demo, question
 
 
@@ -135,12 +150,59 @@ def test_demo_script_outputs_match_the_system(retriever, question, status, phras
         assert phrase in ans.answer, phrase
 
 
-def test_demo_script_does_not_contain_invented_analytics():
-    demo = (ROOT / "docs" / "DEMO_SCRIPT.md").read_text(encoding="utf-8")
-    section = demo.split("### A1–A3", 1)[1].split("## Si algo falla", 1)[0]
-    rows = [r for r in _rows(section) if r and r[0].startswith("A")]
-    assert rows, "tabla analítica no encontrada"
-    from app.data.catalog import build_catalog
+def _verify_module():
+    spec = importlib.util.spec_from_file_location("verify_delivery", ROOT / "scripts" / "verify_delivery.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    if not build_catalog(ROOT / "data" / "raw"):
-        assert all("[PENDIENTE" in r[3] for r in rows), "resultados analíticos sin implementación en main"
+
+def _code_block_after(demo: str, heading: str) -> list[str]:
+    part = demo.split(heading, 1)[1]
+    block = part.split("```", 2)[1]
+    return [line for line in block.splitlines() if line.strip()]
+
+
+ANALYTIC_HEADINGS = {"A1": "### A1", "A2": "### A2", "A3": "### A3", "A4": "### A4"}
+
+
+def test_demo_script_analytics_match_system_and_independent_csv_math():
+    pytest.importorskip("duckdb")
+    from app.tools.analytics import answer_data_question
+
+    module = _verify_module()
+    demo = (ROOT / "docs" / "DEMO_SCRIPT.md").read_text(encoding="utf-8")
+    independent = module.independent_expectations()
+    for key, question in (("A1", module.A1), ("A2", module.A2), ("A3", module.A3), ("A4", module.A4)):
+        result = answer_data_question(question)
+        documented = _code_block_after(demo, ANALYTIC_HEADINGS[key])
+        live = [line for line in result.answer.splitlines() if line.strip()]
+        assert documented == live, f"{key}: el guion no coincide con la salida actual"
+        for fragment in independent.get(question, []):
+            assert fragment in result.answer, f"{key}: {fragment}"
+    assert "[PENDIENTE" not in demo
+
+
+def test_demo_script_reflects_issue_12_state(retriever):
+    """If #12 is fixed, the script must drop the P17 bullet and the warning."""
+    demo = (ROOT / "docs" / "DEMO_SCRIPT.md").read_text(encoding="utf-8")
+    answer = retriever.answer("¿Cuántos días tiene un cliente para devolver una licuadora?").answer
+    p17_live = "sección: P17." in answer
+    assert p17_live == ("sección: P17." in demo)
+    assert p17_live == ("h8hyf2rw9y-afk/HEB#12, abierto" in demo)
+
+
+def test_limitations_list_exactly_the_currently_misrouted_policy_questions():
+    import json
+
+    from app.tools.analytics import looks_like_data
+
+    cases = []
+    for name in ("candidatos_eval.json", "holdout_eval.json"):
+        cases += json.loads((ROOT / "tests" / "rag" / "fixtures" / name).read_text(encoding="utf-8"))
+    policy = [c["question"] for c in cases if c["expect"] == "answered"]
+    misrouted = {q for q in policy if looks_like_data(q)}
+    section = (ROOT / "docs" / "LIMITATIONS.md").read_text(encoding="utf-8").split("## 2.", 1)[1].split("## 3.", 1)[0]
+    documented = {r[0] for r in _rows(section)[1:]}
+    assert documented == misrouted
+    assert f"**{len(misrouted)} se desvían" in section
