@@ -31,12 +31,30 @@ _CAPABILITIES = re.compile(r"\b(que puedes hacer|en que me puedes ayudar|como me
 _MODEL = re.compile(r"\b(que modelo|cual modelo|modelo usas|modelo utilizas|que ia usas)\b")
 
 
+
+# Company/workforce topics take precedence over chatbot-introspection keywords.
+# Preserve questions such as "¿Qué puedes hacer con un empleado ausente?" for
+# grounded business routing rather than matching "qué puedes hacer".
+_WORKPLACE_CONTEXT = re.compile(
+    r"\b(?:heb|h-e-b|tiendas?|sucursales?|ventas?|inventario|stock|"
+    r"sku|tickets?|mermas?|devoluc\w*|reembols\w*|politic\w*|"
+    r"procedimient\w*|documentos?|archivos?|fuentes?|"
+    r"colaborador\w*|emplead\w*|trabajador\w*|personal|"
+    r"turnos?|falt\w*|inasisten\w*|ausen\w*|incapacid\w*|"
+    r"desped\w*|despid\w*|despid\w*|despido\w*|contrat\w*|"
+    r"vacacion\w*|sancion\w*|baja|recursos humanos|nomina|"
+    r"salari\w*|horarios?|licencias?|permisos?|reglamento|"
+    r"cajas?|cajer\w*|reorden|productos?|sigma)\b"
+)
+
 def classify_assistant_question(question: str) -> str | None:
     """Route *only* specific assistant-meta intents, not arbitrary questions.
 
     A greeting combined with a health question takes precedence over greeting.
     """
     q = _plain(question).strip().strip(" ¡!¿?.,;:")
+    if _WORKPLACE_CONTEXT.search(q):
+        return None
     if _OLLAMA.search(q) and (_CONNECTION.search(q) or "estas" in q or "esta" in q):
         return "ollama_status"
     if _OLLAMA.search(q) and (_MODEL.search(q) or re.search(r"\b(tienes|usas|utilizas|habilitado|instalado)\b", q)):
@@ -62,13 +80,6 @@ _GENERAL_CHAT = re.compile(
     r"que es|quien fue|por que|porque|"
     r"dime algo interesante|recomiendame)\b"
 )
-_BUSINESS_TOPIC = re.compile(
-    r"\b(heb|h-e-b|tienda|sucursal|venta|facturacion|inventario|stock|"
-    r"sku|ticket|merma|devoluc|reembolso|politica|procedimiento|"
-    r"manual|documento|archivo|fuente|colaborador|empleado|trabajador|"
-    r"personal|turno|ausencia|incapacidad|salario|nomina|sigma|"
-    r"caja|cajero|reorden|producto)\w*\b"
-)
 
 
 def is_general_conversation(question: str) -> bool:
@@ -78,7 +89,7 @@ def is_general_conversation(question: str) -> bool:
     free-form LLM. Uncertain operational questions remain in grounded flow.
     """
     q = _plain(question).strip().strip(" ¡!¿?.,;:")
-    return bool(_GENERAL_CHAT.search(q) and not _BUSINESS_TOPIC.search(q))
+    return bool(_GENERAL_CHAT.search(q) and not _WORKPLACE_CONTEXT.search(q))
 
 
 def check_ollama(settings: LLMSettings, *, timeout_s: float = 2.5) -> dict[str, object]:
