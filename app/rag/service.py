@@ -174,11 +174,26 @@ _lock = threading.Lock()
 
 
 def get_retriever(settings: RagSettings | None = None) -> PolicyRetriever:
+    """Return the shared retriever (built once from env vars).
+
+    Passing explicit ``settings`` returns a *separate*, uncached retriever and never
+    replaces the shared one, so temporary configurations (health checks, tests,
+    CLI) cannot change the index used by later requests.
+    """
+    global _default
+    if settings is not None:
+        return PolicyRetriever.from_settings(settings)
+    with _lock:
+        if _default is None:
+            _default = PolicyRetriever.from_settings(None)
+        return _default
+
+
+def reset_retriever() -> None:
+    """Drop the shared retriever (e.g. after rebuilding the index on disk)."""
     global _default
     with _lock:
-        if _default is None or settings is not None:
-            _default = PolicyRetriever.from_settings(settings)
-        return _default
+        _default = None
 
 
 def retrieve_policy(query: str, top_k: int = 5) -> list[Evidence]:

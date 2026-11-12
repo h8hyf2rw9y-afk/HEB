@@ -12,7 +12,13 @@ from pathlib import Path
 from .bm25 import BM25Index
 from .chunking import chunk_document
 from .config import RagSettings
-from .embeddings import EmbeddingError, EmbeddingProvider, EmbeddingUsage, cosine_similarities
+from .embeddings import (
+    EmbeddingError,
+    EmbeddingProvider,
+    EmbeddingUsage,
+    cosine_similarities,
+    validate_vectors,
+)
 from .extraction import PdfExtractionError, extract_pdf
 from .models import Chunk, DocumentInfo, RetrievalMetrics
 from .text import tokenize
@@ -54,6 +60,14 @@ class PolicyIndex:
     build_usage: EmbeddingUsage = field(default_factory=EmbeddingUsage)
 
     def __post_init__(self) -> None:
+        self.embed_dim: int | None = None
+        if self.embeddings is not None:
+            try:
+                self.embed_dim = validate_vectors(self.embeddings, expected_count=len(self.chunks))
+            except EmbeddingError as exc:
+                self.warnings.append(f"Embeddings del índice inválidos, se usa solo BM25: {exc}")
+                self.embeddings = None
+                self.embed_model = None
         self._tokens = [tokenize(_index_text(c)) for c in self.chunks]
         self.bm25 = BM25Index(self._tokens)
         # prefix -> most frequent vocabulary term, to map unseen inflections
@@ -111,8 +125,10 @@ class PolicyIndex:
         if embedder is not None and chunks and settings.embeddings != "off":
             try:
                 embeddings, usage = embedder.embed([_index_text(c) for c in chunks])
+                validate_vectors(embeddings, expected_count=len(chunks))
                 embed_model = embedder.model
             except EmbeddingError as exc:
+                embeddings = None
                 if settings.embeddings == "required":
                     raise
                 warnings.append(f"Embeddings deshabilitados, se usa solo BM25: {exc}")
@@ -137,6 +153,7 @@ class PolicyIndex:
             "version": INDEX_VERSION,
             "built_at": self.built_at,
             "embed_model": self.embed_model,
+            "embed_dim": self.embed_dim,
             "warnings": self.warnings,
             "documents": {k: v.model_dump() for k, v in self.documents.items()},
             "chunks": [c.model_dump() for c in self.chunks],
@@ -196,12 +213,16 @@ class PolicyIndex:
             else:
                 try:
                     vectors, usage = embedder.embed([query])
-                    sims = cosine_similarities(vectors[0], self.embeddings)
                     metrics.embedding_calls = usage.calls
                     metrics.embedding_input_tokens = usage.input_tokens
                     metrics.embedding_latency_ms = round(usage.latency_ms, 2)
-                except EmbeddingError as exc:
-                    metrics.warnings.append(f"Embeddings no disponibles en consulta, solo BM25: {exc}")
+                    validate_vectors(vectors, expected_count=1, expected_dim=self.embed_dim)
+                    sims = cosine_similarities(vectors[0], self.embeddings)
+                except (EmbeddingError, ValueError) as exc:
+                    sims = None
+                    metrics.warnings.append(
+                        f"Embeddings no disponibles o incompatibles en consulta, solo BM25: {exc}"
+                    )
         elif self.embeddings is not None:
             metrics.warnings.append("Índice con embeddings pero sin proveedor en consulta; solo BM25")
 

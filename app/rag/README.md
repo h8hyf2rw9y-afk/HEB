@@ -31,10 +31,12 @@ pregunta ──> BM25 (+ coseno de embeddings) ──RRF──> top-k ──> fi
 - **Híbrido (RRF)** cuando el índice tiene embeddings y Ollama responde con el mismo modelo.
 - `HEB_RAG_EMBEDDINGS=required` hace fallar la construcción si Ollama no está disponible.
 
+- Los vectores se validan (cantidad, dimensión única, valores numéricos finitos) al construir, al cargar y en cada consulta. En modo `auto` un vector incompatible degrada a BM25 con advertencia; en `required` la construcción falla. El índice guarda `embed_dim`.
+
 `score`: puntuación BM25 en modo bm25, puntuación RRF en modo híbrido. Solo es comparable dentro de una misma respuesta.
 
 ## Conflictos
-Se muestran **ambas** evidencias. Solo se marca `resolved_by_source` cuando un documento dice explícitamente que reemplaza al otro o establece una regla de precedencia; la frase se cita en `basis`. Las fechas de vigencia se reportan pero **nunca** deciden por sí solas.
+Se muestran **ambas** evidencias. Solo se marca `resolved_by_source` cuando un documento dice explícitamente que reemplaza al otro o establece una regla de precedencia, y la frase identifica **un único** documento indexado (por nombre de archivo, raíz del nombre ≥ 4 caracteres o título, con coincidencia por límites: `_v1` ≠ `_v10`, `v1` ≠ `v1.2`). La frase se cita en `basis`. Si la frase es ambigua (coincide con ambas versiones o con varios documentos) el conflicto queda `unresolved`. Las fechas de vigencia se reportan pero **nunca** deciden, ni siquiera para desempatar.
 
 ## Abstención
 `insufficient_data` si ningún fragmento cubre ≥ `HEB_RAG_MIN_COVERAGE` (0.45) del peso IDF de los términos de la pregunta (o, en modo híbrido, coseno ≥ `HEB_RAG_MIN_EMBED_SIM`, 0.6). Los umbrales se ajustaron con el corpus sintético y **deben recalibrarse con los PDFs reales**.
@@ -54,7 +56,10 @@ python -m pytest tests/rag -q
 HEB_RAG_OLLAMA_TESTS=1 python -m pytest tests/rag -q   # con Ollama local y `ollama pull bge-m3`
 ```
 
-Con PDFs reales: cópialos a una carpeta local **no versionada** y apunta `--pdf-dir` a ella. El índice contiene pasajes de los PDFs; su carpeta incluye un `.gitignore` con `*` para no subirlo por error.
+Con PDFs reales: cópialos a una carpeta local **no versionada** y apunta `--pdf-dir` a ella. El índice (que contiene pasajes) y la carpeta de PDFs sintéticos generados incluyen un `.gitignore` con `*` para no subirlos por error. La carpeta de PDFs reales **no** se autoprotege (el módulo no escribe en ella): falta añadir `data/` al `.gitignore` raíz (propuesto en h8hyf2rw9y-afk/HEB#4).
+
+## Estado compartido
+`get_retriever()` sin argumentos devuelve el recuperador compartido (construido una vez desde variables de entorno). `get_retriever(settings)` y `rag_health(settings)` crean una instancia **separada** y no reemplazan la compartida. Tras reconstruir el índice en disco, llamar a `reset_retriever()`.
 
 ## Limitaciones
 - Sin OCR: las páginas escaneadas se reportan en `warnings`/`empty_pages` y no se indexan.

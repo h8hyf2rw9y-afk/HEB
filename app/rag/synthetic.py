@@ -116,6 +116,13 @@ SYNTHETIC_DOCS: dict[str, dict] = {
 }
 
 
+def protect_directory(directory: Path) -> None:
+    """Write a ``.gitignore`` containing ``*`` so Git ignores the folder's contents."""
+    gitignore = directory / ".gitignore"
+    if not gitignore.exists() or gitignore.read_text(encoding="utf-8").strip() != "*":
+        gitignore.write_text("*\n", encoding="utf-8")
+
+
 def _write_pdf(path: Path, title: str, pages: list[list[tuple[str | None, str]]]) -> None:
     doc = pymupdf.open()
     for page_no, blocks in enumerate(pages):
@@ -140,6 +147,9 @@ def _write_pdf(path: Path, title: str, pages: list[list[tuple[str | None, str]]]
 def write_synthetic_corpus(target_dir: str | Path) -> list[Path]:
     target = Path(target_dir)
     target.mkdir(parents=True, exist_ok=True)
+    # Generated PDFs must never be committed by accident (same rule as the index):
+    # the folder ignores itself regardless of the repository's root .gitignore.
+    protect_directory(target)
     paths = []
     for name, spec in SYNTHETIC_DOCS.items():
         path = target / name

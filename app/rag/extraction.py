@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from .models import DocumentInfo
+from .text import split_sentences
 
 try:  # PyMuPDF >= 1.24 exposes ``pymupdf``; older releases only ``fitz``.
     import pymupdf
@@ -145,12 +146,10 @@ _EFFECTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 _SUPERSEDES_RE = re.compile(
-    r"[^.\n]*\b(?:reemplaza|sustituye|deja sin efecto|deroga|actualiza y reemplaza)\b[^.\n]*",
-    re.IGNORECASE,
+    r"\b(?:reemplaza|sustituye|deja sin efecto|deroga|actualiza y reemplaza)\b", re.IGNORECASE
 )
 _PRECEDENCE_RE = re.compile(
-    r"[^.\n]*\ben caso de (?:conflicto|discrepancia|contradicci[oó]n)\b[^.\n]*",
-    re.IGNORECASE,
+    r"\ben caso de (?:conflicto|discrepancia|contradicci[oó]n)\b", re.IGNORECASE
 )
 
 
@@ -178,13 +177,15 @@ def build_document_info(
     extracted: ExtractedDocument, *, page_count: int, title: str | None, empty_pages: list[int]
 ) -> DocumentInfo:
     text = extracted.full_text
+    # Whole sentences (split on ". " + capital), so "v1.2" or ".pdf" are not truncated.
+    sentences = [s for b in extracted.blocks for s in split_sentences(b.text)]
     return DocumentInfo(
         document=extracted.document,
         title=title,
         pages=page_count,
         effective_date=_parse_effective_date(text),
-        supersedes=[m.group(0).strip() for m in _SUPERSEDES_RE.finditer(text)],
-        precedence_statements=[m.group(0).strip() for m in _PRECEDENCE_RE.finditer(text)],
+        supersedes=[s for s in sentences if _SUPERSEDES_RE.search(s)],
+        precedence_statements=[s for s in sentences if _PRECEDENCE_RE.search(s)],
         empty_pages=empty_pages,
     )
 

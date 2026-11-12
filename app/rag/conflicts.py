@@ -122,45 +122,69 @@ def _same_location(a: SearchHit, b: SearchHit) -> bool:
 
 
 def _mentions(phrase: str, info: DocumentInfo) -> bool:
+    """True if ``phrase`` names the document by file name, file stem or title.
+
+    Matching is token-boundary aware so ``..._v1`` does not match ``..._v10`` and
+    "Política v1" does not match "Política v1.2".
+    """
     p = normalize(phrase)
     stem = info.document.rsplit(".", 1)[0]
     candidates = {normalize(info.document), normalize(stem), normalize(stem.replace("_", " "))}
     if info.title:
         candidates.add(normalize(info.title))
-    return any(c and c in p for c in candidates)
+    return any(
+        len(c) >= 4  # very short stems ("a", "v1") collide with ordinary words
+        and re.search(r"(?<![a-z0-9_])" + re.escape(c) + r"(?![a-z0-9_]|[.,][0-9])", p)
+        for c in candidates
+    )
+
+
+def _unique_target(phrase: str, documents: dict[str, DocumentInfo]) -> DocumentInfo | None:
+    """The single indexed document the phrase refers to, or None if none/ambiguous."""
+    matched = [d for d in documents.values() if _mentions(phrase, d)]
+    return matched[0] if len(matched) == 1 else None
 
 
 def resolve_precedence(
     doc_a: str, doc_b: str, documents: dict[str, DocumentInfo]
 ) -> tuple[str | None, str]:
-    """Return (preferred_document, basis). Only explicit source statements resolve."""
+    """Return (preferred_document, basis).
+
+    Only an explicit, unambiguous statement in the source resolves a conflict:
+    - document X says it replaces Y, and the phrase identifies exactly one indexed
+      document (Y); or
+    - a precedence rule ("en caso de conflicto prevalece ...") that identifies
+      exactly one of the two documents.
+    Effective dates are reported but never decide on their own, and an ambiguous
+    phrase (matching both versions or several documents) leaves the conflict
+    unresolved.
+    """
     a, b = documents.get(doc_a), documents.get(doc_b)
     if a is None or b is None or doc_a == doc_b:
         return None, "Contradicción dentro del mismo documento o sin metadatos; requiere revisión."
 
+    ambiguous: list[str] = []
     for winner, loser in ((a, b), (b, a)):
         for phrase in winner.supersedes:
             if not _mentions(phrase, loser):
                 continue
-            # If the phrase also matches the winner (e.g. both versions share a title),
-            # it is ambiguous unless the text dates confirm the winner is newer.
-            ambiguous = _mentions(phrase, winner)
-            newer = bool(
-                winner.effective_date and loser.effective_date
-                and winner.effective_date > loser.effective_date
-            )
-            if not ambiguous or newer:
+            if _unique_target(phrase, documents) is loser:
                 return winner.document, f'{winner.document} indica: "{phrase}"'
+            ambiguous.append(f'{winner.document}: "{phrase}"')
     for source in (a, b):
         for phrase in source.precedence_statements:
-            mentioned = [d for d in (a, b) if _mentions(phrase, d)]
-            if len(mentioned) == 1:
-                return mentioned[0].document, f'{source.document} indica: "{phrase}"'
+            target = _unique_target(phrase, documents)
+            if target is a or target is b:
+                return target.document, f'{source.document} indica: "{phrase}"'
+            if _mentions(phrase, a) or _mentions(phrase, b):
+                ambiguous.append(f'{source.document}: "{phrase}"')
 
+    basis = "Ningún documento establece explícitamente y sin ambigüedad cuál prevalece."
+    if ambiguous:
+        basis += " Frases de reemplazo/precedencia ambiguas: " + "; ".join(ambiguous) + "."
     dates = [f"{d.document}: {d.effective_date}" for d in (a, b) if d.effective_date]
-    basis = "Ningún documento establece explícitamente cuál prevalece."
     if dates:
-        basis += " Fechas de vigencia encontradas en el texto: " + "; ".join(dates) + "."
+        basis += " Fechas de vigencia encontradas en el texto (no deciden por sí solas): " + "; ".join(dates) + "."
     return None, basis
 
 

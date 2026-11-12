@@ -77,11 +77,44 @@ class OllamaEmbedder:
             usage.calls += 1
             usage.input_tokens += int(data.get("prompt_eval_count") or 0)
             batch_vectors = data.get("embeddings")
-            if not isinstance(batch_vectors, list) or len(batch_vectors) != len(batch):
-                raise EmbeddingError(f"Respuesta inesperada de Ollama: {str(data)[:200]}")
+            try:
+                validate_vectors(
+                    batch_vectors,
+                    expected_count=len(batch),
+                    expected_dim=len(vectors[0]) if vectors else None,
+                )
+            except EmbeddingError as exc:
+                raise EmbeddingError(f"Respuesta inesperada de Ollama: {exc}") from exc
             vectors.extend(batch_vectors)
         self.usage.add(usage)
         return vectors, usage
+
+
+def validate_vectors(
+    vectors: object, *, expected_count: int, expected_dim: int | None = None
+) -> int:
+    """Check that ``vectors`` is a list of ``expected_count`` non-empty numeric,
+    finite vectors of one shared dimension (``expected_dim`` if given).
+
+    Returns the dimension. Raises ``EmbeddingError`` otherwise.
+    """
+    if not isinstance(vectors, list) or len(vectors) != expected_count:
+        got = len(vectors) if isinstance(vectors, list) else type(vectors).__name__
+        raise EmbeddingError(f"Se esperaban {expected_count} vectores, se recibieron {got}")
+    dim = expected_dim
+    for i, vec in enumerate(vectors):
+        if not isinstance(vec, list) or not vec:
+            raise EmbeddingError(f"Vector {i} vacío o con formato inválido")
+        if dim is None:
+            dim = len(vec)
+        elif len(vec) != dim:
+            raise EmbeddingError(f"Vector {i} con dimensión {len(vec)}; se esperaba {dim}")
+        for x in vec:
+            if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):
+                raise EmbeddingError(f"Vector {i} contiene un valor no numérico o no finito: {x!r}")
+    if dim is None:  # expected_count == 0
+        return 0
+    return dim
 
 
 def _norm(v: list[float]) -> float:
@@ -89,6 +122,14 @@ def _norm(v: list[float]) -> float:
 
 
 def cosine_similarities(query: list[float], matrix: list[list[float]]) -> list[float]:
-    """Pure-Python cosine similarity (corpora here are small; avoids a numpy dependency)."""
+    """Pure-Python cosine similarity (corpora here are small; avoids a numpy dependency).
+
+    Raises ``ValueError`` on dimension mismatch instead of silently truncating.
+    """
     qn = _norm(query)
-    return [sum(a * b for a, b in zip(query, row)) / (qn * _norm(row)) for row in matrix]
+    out = []
+    for row in matrix:
+        if len(row) != len(query):
+            raise ValueError(f"Dimensión incompatible: consulta {len(query)} vs índice {len(row)}")
+        out.append(sum(a * b for a, b in zip(query, row, strict=True)) / (qn * _norm(row)))
+    return out
