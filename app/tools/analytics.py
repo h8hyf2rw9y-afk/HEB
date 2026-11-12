@@ -186,24 +186,35 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     if re.search(r"\b(ticket|tickets|incidencias|mesa de servicio)\b", q):
         if not all(path.is_file() for path in (tickets, stores)):
             return _missing(question, "No están disponibles tickets_mesa_servicio.csv y tiendas.csv.")
-        sql = """
-            SELECT t.nombre,
-                   count(*) AS total,
-                   sum(CASE WHEN lower(cast(s.estado AS varchar)) IN ('abierto','en proceso') THEN 1 ELSE 0 END) AS pendientes,
-                   sum(CASE WHEN lower(cast(s.prioridad AS varchar)) IN ('crítica','critica') AND lower(cast(s.estado AS varchar)) IN ('abierto','en proceso') THEN 1 ELSE 0 END) AS criticos
-            FROM read_csv_auto(?) s JOIN read_csv_auto(?) t ON s.tienda_id = t.tienda_id
+        critical_only = bool(re.search(r"\b(critica|criticas|critico|criticos)\b", q))
+        pending_only = bool(re.search(r"\b(abiert[oa]s?|pendientes?|sin resolver|en proceso)\b", q))
+        conditions = []
+        if critical_only:
+            conditions.append("lower(s.prioridad) IN ('crítica', 'critica')")
+        if pending_only:
+            conditions.append("lower(s.estado) IN ('abierto', 'en proceso')")
+        if store_id:
+            conditions.append("s.tienda_id = ?")
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        sql = f"""
+            SELECT t.nombre, COUNT(*) AS total
+            FROM read_csv_auto(?) s
+            JOIN read_csv_auto(?) t ON s.tienda_id = t.tienda_id
+            {where}
             GROUP BY t.nombre ORDER BY t.nombre
         """
+        params = [str(tickets), str(stores)] + ([store_id] if store_id else [])
         with duckdb.connect() as con:
-            rows = con.execute(sql, [str(tickets), str(stores)]).fetchall()
-        if store_name:
-            rows = [row for row in rows if row[0] == store_name]
+            rows = con.execute(sql, params).fetchall()
         if not rows:
-            return _missing(question, "No hay registros de tickets para esa tienda.")
-        lines = [f"{store}: {total} tickets, {pending} pendientes y {critical} críticos pendientes." for store, total, pending, critical in rows]
+            return _missing(question, "No se encontraron tickets que cumplan los filtros.")
+        label = ("críticos " if critical_only else "") + ("pendientes" if pending_only else "registrados")
+        lines = [f"{store}: {total} tickets {label}." for store, total in rows]
         return AnalyticalAnswer(
-            "Tickets en el conjunto de datos:\n" + "\n".join(lines),
-            "answered", [_source("tickets_mesa_servicio.csv", "estado y prioridad por tienda"), _source("tiendas.csv", "tienda_id")], "tickets",
+            f"Tickets {label}, por tienda:\n" + "\n".join(lines) +
+            f"\nTotal: {sum(row[1] for row in rows)} tickets.",
+            "answered", [_source("tickets_mesa_servicio.csv", "prioridad y estado al corte"),
+                         _source("tiendas.csv", "tienda_id")], "tickets",
         )
 
     if not all(path.is_file() for path in (sales, stores)):
