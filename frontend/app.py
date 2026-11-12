@@ -31,10 +31,11 @@ def health_check(base_url: str) -> tuple[bool, str]:
         return False, f"Sin conexión: {type(exc).__name__}"
 
 
-def send_question(base_url: str, question: str) -> dict:
+def send_question(base_url: str, question: str, previous_question: str | None = None) -> dict:
     response = httpx.post(
         f"{base_url}/chat",
-        json={"question": question, "conversation_id": None},
+        json={"question": question, "conversation_id": None,
+              "previous_question": previous_question},
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
@@ -42,6 +43,25 @@ def send_question(base_url: str, question: str) -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("answer"), str):
         raise ValueError("Respuesta inesperada del backend.")
     return data
+
+
+def recent_question_context(messages: list[dict]) -> str | None:
+    """Bounded context for return/receipt follow-ups, not backend memory."""
+    prior_users = [
+        str(message.get("content", ""))
+        for message in messages[:-1]
+        if message.get("role") == "user"
+    ]
+    if not prior_users:
+        return None
+    latest = prior_users[-1]
+    # If the user repeats "sin ticket", retain the original return question
+    # from at most three recent turns.
+    if re.search(r"(?i)\\b(?:sin (?:el )?ticket|no (?:tiene|trae) (?:el )?ticket)\\b", latest):
+        for prior in reversed(prior_users[-3:]):
+            if re.search(r"(?i)\\b(?:devoluci[oó]n|devolver|reembolso)\\b", prior):
+                return prior
+    return latest
 
 
 def display_answer(answer: str) -> str:
@@ -157,7 +177,7 @@ def main() -> None:
 
     st.subheader("Consultas")
     st.caption("Pregunta por las ventas de junio a agosto de 2026, el inventario, los tickets o las políticas internas.")
-    st.caption("Cada consulta es independiente: no se conserva contexto ni historial en el backend. Para un seguimiento, incluye nuevamente el contexto necesario.")
+    st.caption("La interfaz envía el contexto reciente para seguimientos breves sobre devoluciones; el backend no guarda historial. Para otros seguimientos, incluye los detalles necesarios.")
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if st.button("Nueva conversación"):
@@ -185,7 +205,7 @@ def main() -> None:
     with st.chat_message("assistant"):
         with st.spinner("Consultando..."):
             try:
-                result = send_question(base_url.rstrip("/"), question)
+                result = send_question(base_url.rstrip("/"), question, recent_question_context(st.session_state.messages))
                 answer = result["answer"]
                 st.markdown(display_answer(answer))
                 if result.get("status") != "answered":
