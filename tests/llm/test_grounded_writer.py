@@ -372,3 +372,23 @@ def test_inventory_rows_swapped_dropped_or_renamed_are_rejected(writer_factory, 
     out = _rewrite(writer, verified=A2_VERIFIED, evidence=A2_EVIDENCE,
                    question="¿Qué productos de la tienda T01 están por debajo del punto de reorden?")
     assert not out.generated and out.answer == A2_VERIFIED and out.fallback_reason == "validacion_fallida"
+
+
+def test_short_answer_skips_generation_and_preserves_deterministic_result(writer_factory):
+    writer, fake = writer_factory(ollama_reply("Total: 0 tickets."))
+    out = _rewrite(
+        writer, verified="Tickets críticos pendientes, por tienda:\nTotal: 0 tickets.",
+        question="¿Cuántos tickets críticos siguen abiertos?"
+    )
+    assert not out.generated
+    assert out.llm_calls == 0 and out.fallback_reason == "redaccion_innecesaria"
+    assert out.answer == "Tickets críticos pendientes, por tienda:\nTotal: 0 tickets."
+    assert fake.requests == []
+
+
+def test_multirow_prompt_explicitly_requires_all_rows():
+    messages = build_messages(
+        "¿Qué tienda vendió más en agosto de 2026?", "datos", A1_VERIFIED
+    )
+    assert "reproduce TODAS las tiendas o SKU" in messages[1]["content"]
+    assert "NO RESUMAS" in messages[0]["content"]
