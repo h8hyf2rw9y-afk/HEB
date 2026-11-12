@@ -63,3 +63,33 @@ def test_casual_system_prompt_does_not_claim_corporate_references():
     from app.llm.general import CASUAL_SYSTEM_PROMPT
     assert "no tiene documentos ni datos corporativos" in CASUAL_SYSTEM_PROMPT
     assert "no des consejo laboral individual" in CASUAL_SYSTEM_PROMPT
+
+@pytest.mark.parametrize("question", [
+    "¿Qué opinas de despedir a alguien por faltar dos semanas?",
+    "¿Qué opinas de sancionar a alguien por faltar?",
+    "¿Qué es una incapacidad laboral?",
+    "Explícame los permisos del personal",
+    "¿Qué puedes hacer con un empleado que no vino al turno?",
+    "¿Cómo manejamos una baja de trabajadores?",
+])
+def test_labor_and_operational_topics_never_enter_ungrounded_chat(question):
+    assert not assistant_chat.is_general_conversation(question)
+
+
+def test_unverified_answer_is_marked_as_such_in_api(monkeypatch):
+    monkeypatch.setattr(main, "LLM_SETTINGS", LLMSettings(enabled=True))
+    monkeypatch.setattr(main, "generate_general_answer", lambda *args, **kwargs: CasualResult(
+        answer="Un chiste breve.", generated=True, model="llama3.2",
+        llm_calls=1, input_tokens=11, output_tokens=6,
+    ))
+    data = client.post("/chat", json={"question": "Cuéntame un chiste"}).json()
+    assert data["metrics"]["answer_mode"] == "general_unverified"
+    assert data["evidence"] == []
+
+
+def test_verifiable_company_answer_is_not_marked_general(monkeypatch):
+    monkeypatch.setattr(main, "LLM_SETTINGS", LLMSettings(enabled=False))
+    data = client.post("/chat", json={"question": "¿Cuántas tiendas tengo?"}).json()
+    assert data["status"] == "answered"
+    assert data["metrics"]["answer_mode"] == "grounded_data"
+    assert data["evidence"]
