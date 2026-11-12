@@ -73,3 +73,15 @@ $env:HEB_LLM_REAL_TESTS = "1"
 .\.venv\Scripts\python.exe -m pytest tests\llm\test_real_ollama.py -q -s
 Remove-Item Env:HEB_LLM_REAL_TESTS
 ```
+
+## Rutas conversacionales y límites de evidencia
+
+El endpoint `/chat` distingue tres formas de respuesta:
+
+- **Consulta H-E-B fundamentada:** datos de `tiendas.csv`, otros CSV o RAG de políticas. Las cifras se calculan de manera determinista, y cualquier reescritura generativa debe pasar la validación. `metrics.answer_mode` indica `grounded_data` o `grounded_policy`.
+- **Conversación general (opcional):** saludos, identidad y preguntas generales pueden pasar por `app/llm/general.py` cuando `HEB_LLM_ENABLED=true`. **No están respaldadas por los CSV ni los PDF**, y el resultado puede contener errores factuales. Se marca `answer_mode=general_unverified` cuando interviene esa ruta.
+- **Consultas sobre capacidades, fuentes, salud de Ollama y casos sin contexto:** se atienden de modo determinista o solicitan aclaración. Los temas laborales/operativos no deben acceder al chat generativo libre; ausencia prolongada, incapacidad y posibles medidas disciplinarias requieren validación del área de Recursos Humanos y políticas aplicables, no inferencias del modelo.
+
+**No hay memoria conversacional entre mensajes.** `conversation_id` se acepta por compatibilidad del contrato, pero actualmente no crea una sesión, no recupera historial, ni transmite mensajes previos a Ollama. El historial visible en Streamlit permanece solo en esa sesión visual. Para consultas de seguimiento, escribe los detalles necesarios en la nueva pregunta.
+
+**Transparencia:** Streamlit muestra un aviso visible cuando la respuesta es conversación general no verificada. `metrics.generated=true` por sí solo **no significa** que la respuesta haya sido contrastada contra datos empresariales. No se deben presentar las respuestas generales como políticas, procedimientos o criterios de Recursos Humanos de H-E-B.
