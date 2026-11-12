@@ -6,3 +6,10 @@ __pycache__/
 !.env.example
 .pytest_cache/
 .streamlit/secrets.toml
+
+# Private H-E-B inputs and generated retrieval artifacts
+# Keep synthetic, reviewed samples separately under data/samples/.
+/data/raw/
+/data/policies/
+/data/rag_index/
+/data/synthetic_policies/
