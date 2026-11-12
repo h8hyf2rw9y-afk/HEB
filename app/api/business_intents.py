@@ -44,7 +44,7 @@ _HR_SUBJECT = re.compile(
 _HR_ABSENCE = re.compile(
     r"\b(falt[ao]|faltas?|ausent[ea]s?|ausencia|ausentismo|inasistencia|incapacidad|"
     r"no (?:ha|puede|pudo|podido|se ha)?\s*(?:presentad[oa]|venido|ir|asistid[oa]|asistir)|"
-    r"sin ir|sin presentarse|no se presenta)\b"
+    r"sin (?:poder )?ir|no (?:ha podido|puede|pudo) ir|sin presentarse|no se presenta)\b"
 )
 _LONG_DURATION = re.compile(
     r"\b(semanas?|mes(?:es)?|dias?|varios|muchos|prolongad[ao]|seguido|continu[ao]|"
