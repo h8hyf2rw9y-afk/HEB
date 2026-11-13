@@ -176,7 +176,13 @@ def _fast_analytics(question: str, start: float) -> ChatResponse | None:
         r"|\btienda\s+(?:con\s+)?(?:mas|mayores)\s+ventas\b",
         q,
     ))
-    if not rank:
+    comparison = bool(re.search(
+        r"^compara\s+productos\s+de\s+tienda\s+.+\s+y\s+tienda\s+.+\s+en\s+"
+        r"(?:junio|julio|agosto)\s+de\s+2026$", q,
+    ))
+    # Follow-up questions resolved to these exact, supported SQL templates
+    # should not pay for a second expensive Ollama drafting round.
+    if not (rank or comparison):
         return None
     result = answer_data_question(question)
     return ChatResponse(
