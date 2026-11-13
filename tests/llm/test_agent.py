@@ -256,3 +256,24 @@ def test_card_and_receipt_are_different_return_intents():
         "¿Cómo se hace la devolución si el cliente pagó con tarjeta y no trae la tarjeta original?"
     ) is None
     assert route_returns("¿Puedo devolver sin ticket de compra?").kind == "no_receipt"
+
+
+def test_obviously_wrong_tool_family_is_rejected_without_query_execution():
+    settings = LLMSettings(enabled=True)
+    invoked = []
+    agent = ToolAgent(settings, {
+        "consultar_datos_tienda": lambda q: invoked.append(("data", q)),
+        "buscar_politicas": lambda q: invoked.append(("policy", q)),
+    })
+    result, record = agent._execute({
+        "name": "buscar_politicas",
+        "arguments": {"consulta": "¿Qué tienda vendió más en agosto de 2026?"},
+    }, "¿Qué tienda vendió más en agosto de 2026?")
+    assert result is None
+    assert record["status"] == "herramienta_no_pertinente"
+    assert invoked == []
+
+
+def test_mixed_policy_and_data_intent_does_not_force_one_tool():
+    from app.llm.agent import _obvious_tool
+    assert _obvious_tool("Ventas netas y procedimiento de devolución de mercancía") is None
