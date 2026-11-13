@@ -29,6 +29,17 @@ class Chunk(BaseModel):
     label: str | None = None  # first cell of a table row
 
 
+def http_evidence(document: str, page: int, section: str | None, passage: str,
+                  chunk_id: str | None, max_passage_chars: int = 600) -> dict:
+    """Shared by every evidence type so /chat always exposes the same auditable shape."""
+    reference = f"p. {page}" + (f", sección: {section}" if section else "")
+    text = " ".join(passage.split())
+    if len(text) > max_passage_chars:
+        text = text[:max_passage_chars].rsplit(" ", 1)[0] + " …"
+    return {"source_type": "pdf", "source": document, "reference": reference,
+            "page": page, "chunk_id": chunk_id, "passage": text}
+
+
 class Evidence(BaseModel):
     """Retrieved passage with provenance (contract: retrieve_policy -> list[Evidence])."""
 
@@ -40,12 +51,9 @@ class Evidence(BaseModel):
     chunk_id: str | None = None
     score: float | None = None
 
-    def to_http_evidence(self) -> dict[str, str]:
-        """Map to the illustrative ``POST /chat`` evidence item shape."""
-        reference = f"p. {self.page}"
-        if self.section:
-            reference += f", sección: {self.section}"
-        return {"source_type": "pdf", "source": self.document, "reference": reference}
+    def to_http_evidence(self, max_passage_chars: int = 600) -> dict:
+        """``POST /chat`` evidence item: citation plus the retrieved passage and chunk id."""
+        return http_evidence(self.document, self.page, self.section, self.passage, self.chunk_id, max_passage_chars)
 
 
 class DocumentInfo(BaseModel):

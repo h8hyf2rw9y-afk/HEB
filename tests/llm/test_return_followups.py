@@ -1,0 +1,210 @@
+"""Return and receipt routing: never replace store-return context with IT tickets."""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.api import main
+from app.api.return_intents import route_returns, check_return_evidence
+from app.rag.interface import PolicyEvidence, PolicySearchResponse
+
+client = TestClient(main.app)
+
+RETURN_QUESTION = "Que pasa si un cliente quiere devolver un producto cual es el proceso ?"
+
+
+def test_generic_return_question_selects_general_process_not_blender_faq():
+    route = route_returns(RETURN_QUESTION)
+    assert route is not None and route.kind == "general_process"
+    assert "procedimiento_devoluciones.pdf" in route.query
+
+
+@pytest.mark.parametrize("question", [
+    "Si no tiene el ticket",
+    "¿Y si no trae ticket?",
+    "Pero no presenta el ticket",
+])
+def test_followup_preserves_return_receipt_semantics(question):
+    route = route_returns(question, RETURN_QUESTION)
+    assert route is not None and route.kind == "no_receipt"
+    assert "sin ticket" in route.query
+
+
+def test_standalone_short_ticket_question_requests_context():
+    route = route_returns("Si no tiene el ticket")
+    assert route is not None and route.kind == "needs_context"
+
+
+@pytest.mark.parametrize("question", [
+    "Cómo levantar un ticket de Mesa de Servicio?",
+    "Si no tiene el ticket de soporte",
+])
+def test_it_service_questions_are_not_return_questions(question):
+    assert route_returns(question, RETURN_QUESTION) is None
+
+
+def test_no_receipt_answer_requires_pertinent_source_and_conditions():
+    answer = (
+        "Sí, con restricciones: presentar identificación oficial, "
+        "se devuelve exclusivamente en vale de tienda. Se permiten "
+        "como máximo tres devoluciones sin ticket. "
+        "[faq_gerentes_de_tienda.pdf, p. 3, sección: P?]"
+    )
+    assert check_return_evidence(
+        "no_receipt", status="answered", answer=answer,
+        evidence=[{"source": "faq_gerentes_de_tienda.pdf"}]
+    )
+    assert not check_return_evidence(
+        "no_receipt", status="answered", answer="Se levanta un ticket en Mesa de Servicio.",
+        evidence=[{"source": "manual_apertura_y_cierre_tienda.pdf"}]
+    )
+
+
+def test_first_return_question_rejects_appliance_only_faq(monkeypatch):
+    def wrong_result(*args, **kwargs):
+        return PolicySearchResponse(
+            status="answered", answer=(
+                "Para licuadoras hay 15 días con ticket. "
+                "[faq_gerentes_de_tienda.pdf, p. 4, sección: P15]"
+            ),
+            evidence=[PolicyEvidence(
+                document="faq_gerentes_de_tienda.pdf", page=4, passage="15 días",
+                section="P15", score=1.0, chunk_id="fake",
+            )],
+        )
+    monkeypatch.setattr(main, "search_policies", wrong_result)
+    data = client.post("/chat", json={"question": RETURN_QUESTION}).json()
+    assert data["status"] == "needs_clarification"
+    assert data["evidence"] == []
+    assert "15 días" not in data["answer"]
+
+
+def test_followup_does_not_hit_technical_tickets(monkeypatch):
+    def wrong_result(*args, **kwargs):
+        return PolicySearchResponse(
+            status="answered", answer=(
+                "Se levantan tickets de soporte en el portal de Mesa de Servicio."
+                " [manual_apertura_y_cierre_tienda.pdf, p. 7, sección: 9.3]"
+            ),
+            evidence=[PolicyEvidence(
+                document="manual_apertura_y_cierre_tienda.pdf", page=7,
+                passage="Mesa de Servicio", section="9.3", score=1, chunk_id="fake",
+            )],
+        )
+    monkeypatch.setattr(main, "search_policies", wrong_result)
+    data = client.post("/chat", json={
+        "question": "Si no tiene el ticket", "previous_question": RETURN_QUESTION
+    }).json()
+    assert data["status"] == "needs_clarification"
+    assert data["evidence"] == []
+    assert "Mesa de Servicio" not in data["answer"]
+
+
+def test_standalone_receipt_followup_does_not_call_rag(monkeypatch):
+    monkeypatch.setattr(main, "search_policies", lambda *a, **kw: pytest.fail("Ambiguous ticket should not query RAG"))
+    data = client.post("/chat", json={"question": "Si no tiene el ticket"}).json()
+    assert data["status"] == "needs_clarification"
+    assert "ticket de compra" in data["answer"]
+    assert "Mesa de Servicio" in data["answer"]
+    assert data["evidence"] == []
+
+
+def test_no_receipt_full_question_uses_verified_faq(monkeypatch):
+    def verified(*args, **kwargs):
+        return PolicySearchResponse(
+            status="answered", answer=(
+                "Sí, con restricciones: identificación oficial, devolución sin ticket "
+                "exclusivamente en vale de tienda. "
+                "[faq_gerentes_de_tienda.pdf, p. 3, sección: P?]"
+            ),
+            evidence=[PolicyEvidence(
+                document="faq_gerentes_de_tienda.pdf", page=3,
+                section="P?", passage="Sí, con restricciones: identificación oficial.",
+                score=1, chunk_id="fake",
+            )],
+        )
+    monkeypatch.setattr(main, "search_policies", verified)
+    data = client.post("/chat", json={
+        "question": "Si no tiene el ticket",
+        "previous_question": RETURN_QUESTION,
+    }).json()
+    assert data["status"] == "answered"
+    assert "vale de tienda" in data["answer"]
+    assert data["evidence"][0]["source"] == "faq_gerentes_de_tienda.pdf"
+    assert data["metrics"]["generated"] is False
+
+
+def test_real_pdfs_without_ticket_cannot_resolve_as_it_ticket(monkeypatch, tmp_path):
+    """Run actual retrieval over exercise PDFs, not just a mocked policy result."""
+    from pathlib import Path
+    from app.rag.config import RagSettings
+    from app.rag.extraction import discover_pdfs
+    from app.rag.index import PolicyIndex
+    from app.rag.service import reset_retriever
+
+    pdfs = discover_pdfs(Path(__file__).resolve().parents[2] / "candidatos" / "politicas")
+    if len(pdfs) != 4:
+        pytest.skip("The four exercise PDFs are not present")
+    index_path = tmp_path / "index"
+    PolicyIndex.build(pdfs, RagSettings(embeddings="off")).save(index_path)
+    monkeypatch.setenv("HEB_RAG_INDEX_DIR", str(index_path))
+    monkeypatch.setenv("HEB_RAG_EMBEDDINGS", "off")
+    reset_retriever()
+    try:
+        data = client.post("/chat", json={
+            "question": "Si no tiene el ticket",
+            "previous_question": RETURN_QUESTION,
+        }).json()
+        assert data["status"] == "answered", data
+        assert "vale de tienda" in data["answer"]
+        assert "identificación oficial" in data["answer"]
+        assert "manual_apertura_y_cierre_tienda.pdf" not in data["answer"]
+        assert all(item["source"] != "manual_apertura_y_cierre_tienda.pdf"
+                   for item in data["evidence"])
+    finally:
+        reset_retriever()
+
+
+def test_original_card_without_payment_card_uses_section_6_1_real_pdfs(monkeypatch, tmp_path):
+    """Regression: no original bank card != no purchase receipt."""
+    from pathlib import Path
+    from app.rag.config import RagSettings
+    from app.rag.extraction import discover_pdfs
+    from app.rag.index import PolicyIndex
+    from app.rag.service import reset_retriever
+
+    question = "¿Cómo se hace la devolución si el cliente pagó con tarjeta y no trae la tarjeta original?"
+    assert route_returns(question) is None
+    pdfs = discover_pdfs(Path(__file__).resolve().parents[2] / "candidatos" / "politicas")
+    if len(pdfs) != 4:
+        pytest.skip("The four exercise PDFs are not present")
+    index_path = tmp_path / "index"
+    PolicyIndex.build(pdfs, RagSettings(embeddings="off")).save(index_path)
+    monkeypatch.setenv("HEB_RAG_INDEX_DIR", str(index_path))
+    monkeypatch.setenv("HEB_RAG_EMBEDDINGS", "off")
+    reset_retriever()
+    try:
+        data = client.post("/chat", json={"question": question}).json()
+        assert data["status"] == "answered", data
+        assert "procedimiento_devoluciones.pdf" in data["answer"]
+        assert "6.1" in data["answer"]
+        assert "vale de tienda" in data["answer"]
+        assert "Mesa de Servicio" not in data["answer"]
+    finally:
+        reset_retriever()
+
+
+
+def test_exchange_and_refund_comparison_needs_both_policy_concepts():
+    from app.api.return_intents import check_return_evidence, route_returns
+    question = "Se puede cambiar un producto o es decir un rembolso ?"
+    # The common misspelling "rembolso" should still be understood.
+    route = route_returns(question)
+    assert route is not None and route.kind == "exchange_vs_refund"
+    assert "diferencia" in route.query.lower()
+    source = [{"source": "procedimiento_devoluciones.pdf", "source_type": "pdf"}]
+    assert not check_return_evidence(
+        "exchange_vs_refund", status="answered",
+        answer="Sí se puede cambiar. [procedimiento_devoluciones.pdf, p. 1, sección: 2. Definiciones]",
+        evidence=source,
+    )

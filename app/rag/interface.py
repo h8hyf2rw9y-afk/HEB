@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from .config import RagSettings
 from .index import IndexNotFoundError
-from .models import AnswerStatus, PolicyConflict, RetrievalMetrics
+from .models import AnswerStatus, PolicyConflict, RetrievalMetrics, http_evidence
 from .service import PolicyRetriever, get_retriever
 
 logger = logging.getLogger(__name__)
@@ -56,9 +56,10 @@ class PolicyEvidence(BaseModel):
     score: float
     chunk_id: str
 
-    def to_http_evidence(self) -> dict[str, str]:
-        reference = f"p. {self.page}" + (f", sección: {self.section}" if self.section else "")
-        return {"source_type": "pdf", "source": self.document, "reference": reference}
+    def to_http_evidence(self, max_passage_chars: int = 600) -> dict:
+        """HTTP evidence for /chat. Besides the citation it carries the retrieved passage
+        and its chunk id, so a user can audit the exact text behind each claim."""
+        return http_evidence(self.document, self.page, self.section, self.passage, self.chunk_id, max_passage_chars)
 
 
 class PolicySearchResponse(BaseModel):
@@ -120,4 +121,8 @@ def rag_health(settings: RagSettings | None = None) -> dict:
         "embeddings_enabled": r.embedder is not None,
         "built_at": r.index.built_at,
         "index_warnings": r.index.warnings,
+        "document_list": [
+            {"document": d.document, "title": d.title, "pages": d.pages, "code": d.code, "version": d.version}
+            for d in sorted(r.index.documents.values(), key=lambda d: d.document)
+        ],
     }

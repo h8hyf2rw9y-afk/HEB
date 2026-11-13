@@ -1,4 +1,4 @@
-name: HEB DuckDB validation
+name: HEB validation (DuckDB, RAG, LLM)
 on:
   pull_request:
     paths:
@@ -31,8 +31,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-      - name: Verify backend and RAG tests
-        run: python -m pytest tests/backend tests/rag -q
+      - name: Build offline policy index for chat contract tests
+        run: python -m app.rag build --pdf-dir candidatos/politicas --index-dir data/rag_index --embeddings off
+
+      - name: Run all automated tests (LLM tests use a simulated Ollama; real-model tests stay skipped)
+        run: python -m pytest tests -q -rs
 
       - name: Reproduce three analytical demo answers
         run: python scripts/demo_analytics.py

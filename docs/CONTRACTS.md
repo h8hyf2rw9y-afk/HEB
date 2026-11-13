@@ -20,6 +20,12 @@ Illustrative response shape:
 
 Metrics above are placeholders, not measured values. `status` may be `answered`, `needs_clarification`, `insufficient_data`, or `error`.
 
+Additive fields (backward compatible; existing keys are unchanged):
+- PDF evidence items also carry `page`, `chunk_id` and `passage` (the retrieved text, whitespace-normalised, at most about 600 characters) so each citation can be audited.
+- `metrics` also carries `llm_model`, `generation_latency_ms`, `generated`, `fallback_reason`, `answer_mode`, `tool_calls` (agent mode: tool, query executed, status, `duration_ms`, and `retried_with_original_question` when the model's reformulation found nothing) and `timings` (`total_ms`, `llm_ms`, `llm_load_ms`, `llm_prompt_eval_ms`, `llm_generation_ms`, `tokens_per_s`, `tools_ms`, `other_ms`, plus one entry per Ollama call).
+- `GET /health/ollama` probes Ollama live (`reachable`, `model_available`); `GET /health/llm` only reports configuration.
+- `GET /sources` lists the CSV files (rows, columns, date range) and the indexed PDFs; it is read-only.
+
 ## Internal tool interfaces
 - `query_sales(filters: SalesFilters) -> ToolResult`
 - `query_inventory(filters: InventoryFilters) -> ToolResult`
