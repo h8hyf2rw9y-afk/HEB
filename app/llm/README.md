@@ -70,6 +70,16 @@ Las respuestas con estado `insufficient_data`, `needs_clarification` o `error` *
 
 **Costo:** la inferencia es local, así que no hay costo por token de API. Sí hay costo de ejecución local: el modelo ocupa memoria (`load_duration` de Ollama) y CPU o GPU durante segundos por respuesta, frente a milisegundos del modo determinista. Los tokens de embeddings son otro consumo distinto, que se reporta por separado.
 
+## Evaluar conversaciones de varios turnos
+
+Con FastAPI iniciado en modo agente y Ollama operativo, ejecuta en otra terminal:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\eval_agent_conversations.py --out data\eval_agent_conversations.json
+```
+
+El script prueba seguimientos sobre devoluciones, tarjeta original y ventas, con `conversation_id` aislado por episodio. Registra selección de herramientas, respuesta, evidencia, estados, fallbacks, tokens y percentiles de latencia. **La exactitud de citas y políticas requiere revisión humana:** estos indicadores no garantizan ausencia de alucinaciones.
+
 ## Comparar los modos en tu equipo
 El script ejecuta sobre las mismas 12 preguntas el Modo A (determinista), el Modo B (redacción) y el Modo C (agente); activa el LLM por sí mismo en B y C.
 ```powershell
