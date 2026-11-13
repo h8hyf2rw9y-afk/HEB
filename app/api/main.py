@@ -194,9 +194,42 @@ def chat(request: ChatRequest) -> ChatResponse:
     response = _chat_once(effective_request, verified_context=latest)
     if resolved:
         response.metrics.resolved_question = resolved
+    # If an elliptical utterance was answered via multiple model-selected
+    # CSV queries, keep the precise *executed ranking query* as the memory
+    # anchor. It is checked against DuckDB again, not trusted from model prose.
+    memory_question = effective_request.question.strip()
+    if (response.status == "answered"
+            and response.metrics.answer_mode == "grounded_data"
+            and any(e.get("source") == "ventas.csv" for e in response.evidence)
+            and not looks_like_data(memory_question)):
+        from app.tools.analytics import plain as _plain_data
+        import re as _re
+        requested_months = set(_re.findall(
+            r"\\b(?:junio|julio|agosto)\\b", _plain_data(memory_question)
+        ))
+        for record in reversed(response.metrics.tool_calls):
+            candidate = record.get("query", "")
+            if (record.get("name") != "consultar_datos_tienda"
+                    or record.get("status") != "answered"
+                    or not isinstance(candidate, str)):
+                continue
+            q = _plain_data(candidate)
+            if not _re.search(r"\\b(?:tienda|sucursal)\\b", q):
+                continue
+            if not _re.search(r"\\b(?:vendio|mas|mayor)\\b", q):
+                continue
+            if requested_months and not requested_months <= set(_re.findall(
+                    r"\\b(?:junio|julio|agosto)\\b", q)):
+                continue
+            # A verified CSV result, not the model's answer, authorizes
+            # using this query to ground later pronoun references.
+            verified = answer_data_question(candidate)
+            if verified.status == "answered" and verified.intent == "sales":
+                memory_question = candidate
+                break
     SESSIONS.add(
         request.conversation_id,
-        effective_request.question.strip(),
+        memory_question,
         answer=response.answer,
         evidence=response.evidence,
         kind=response.metrics.answer_mode,
