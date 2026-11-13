@@ -34,8 +34,21 @@ def _tool_store_data(query: str) -> ToolResult:
 
 
 def _tool_policies(query: str) -> ToolResult:
-    """Agent tool: the rag-v1 policy search (extractive, cited, with conflicts)."""
-    r = search_policies(PolicySearchRequest(query=query, top_k=5))
+    """Agent tool: verify policy relevance, especially purchase vs IT tickets."""
+    returns = route_returns(query)
+    if returns and returns.kind == "needs_context":
+        return ToolResult(kind="politicas", status="needs_clarification",
+                          answer="¿Hablas del ticket de compra para una devolución o de soporte técnico?")
+    effective_query = returns.query if returns else query
+    r = search_policies(PolicySearchRequest(query=effective_query, top_k=5))
+    evidence = [e.to_http_evidence() for e in r.evidence]
+    if returns and not check_return_evidence(returns.kind, status=r.status,
+                                             answer=r.answer, evidence=evidence):
+        return ToolResult(
+            kind="politicas", status="needs_clarification",
+            answer="No se encontró evidencia pertinente para esta devolución. "
+                   "Indica tipo de producto y comprobante de compra.",
+        )
     m = r.metrics
     return ToolResult(
         kind="politicas", status=r.status, answer=r.answer,
