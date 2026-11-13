@@ -122,6 +122,10 @@ def evaluate(base_url: str, timeout: float) -> dict:
                     else any(source.endswith(".pdf") for source in source_names)
                 ),
                 "tokens": metrics.get("total_tokens", 0),
+                "input_tokens": metrics.get("input_tokens", 0),
+                "output_tokens": metrics.get("output_tokens", 0),
+                "llm_calls": metrics.get("llm_calls", 0),
+                "llm_model": metrics.get("llm_model"),
                 "latency_ms": metrics.get("latency_ms", elapsed),
                 "requires_manual_review": True,
                 "suspicious_it_ticket_in_return": (

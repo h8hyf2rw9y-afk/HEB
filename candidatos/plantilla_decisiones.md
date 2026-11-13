@@ -25,10 +25,10 @@ Primero los contratos entre piezas (FastAPI y la interfaz del RAG), para que dat
 - Con el modelo real hice una prueba manual en Windows, pero falta la evaluación completa con Llama 3.2. [PENDIENTE: resultados de `eval_llm_modes.py` y `eval_agent_conversations.py`]
 
 ## 4. Costo por interacción y cómo lo medí
-- Costo monetario por token: $0, porque el modelo corre en Ollama local.
-- Costo real: memoria, CPU o GPU y tiempo. En mi prueba manual con `qwen3:4b-instruct`, una consulta del agente tardó de 17 a 147 segundos. Sin modelo, el modo determinista responde en unos 3 ms.
-- Medición: cada respuesta de `/chat` trae llamadas al LLM, tokens de entrada y salida (los contadores reales de Ollama), latencia de generación y latencia total. Los embeddings se cuentan aparte.
-- Una pregunta del agente hace al menos dos llamadas: una para elegir la herramienta y otra para redactar. [PENDIENTE: tokens y latencia medianos de Llama 3.2 desde `data/eval_llm_modes.json`]
+- Costo real por token: $0, porque el modelo corre en Ollama local. El costo real es memoria, CPU o GPU y tiempo: en mi prueba manual con `qwen3:4b-instruct` una consulta del agente tardó de 17 a 147 segundos, contra unos 3 ms del modo determinista.
+- Medición: cada respuesta de `/chat` trae llamadas al LLM, tokens de entrada y salida (los contadores reales de Ollama), latencia de generación y latencia total. Una pregunta del agente hace al menos dos llamadas: elegir la herramienta y redactar.
+- Simulación: con `scripts/simulate_api_cost.py` traduje esos tokens a lo que costarían con la API de Anthropic, a precios de lista del 3 de noviembre de 2026 por millón de tokens: Haiku 5.5 $0.10 / $0.50, Sonnet 5.5 $2 / $10 y Opus 5.5 $4 / $20. Como referencia, 1,000 tokens de entrada y 200 de salida cuestan unos $0.0002 en Haiku, $0.004 en Sonnet y $0.008 en Opus. [PENDIENTE: mediana real de tokens por pregunta y costo simulado por 1,000 preguntas, según mis resultados]
+- Es una aproximación: Claude cuenta los tokens con otro tokenizador, cobra su razonamiento interno como salida y sus definiciones de herramientas añaden entrada, así que el costo real puede ser mayor.
 
 ## 5. Qué haría con dos semanas más
 - Medir Llama 3.2, Llama 3.1 y Qwen con las mismas preguntas, y elegir el modelo por tasa de respuestas validadas, latencia y tokens, no por impresión.
