@@ -26,7 +26,9 @@ def test_reads_mode_report_and_ignores_deterministic_rows_in_summary(tmp_path):
     path.write_text(json.dumps(report), encoding="utf-8")
     result = sim.simulate(sim.load_interactions(path), ["claude-opus-5-5"])
     s = result["summary"]
-    assert (s["interactions"], s["interactions_with_llm_tokens"]) == (2, 1)
+    assert s["interactions"] == 1  # the 0-token deterministic answer is excluded, not priced at $0
+    assert result["excluded_without_tokens"] == [{"source": "eval_llm_modes.json:A_determinista", "question": "q"}]
+    assert list(result["by_source"]) == ["eval_llm_modes.json:C_agente"]
     assert s["per_model"]["claude-opus-5-5"]["median_usd_per_interaction"] == pytest.approx(900 * 4e-6 + 100 * 20e-6)
 
 

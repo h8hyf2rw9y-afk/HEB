@@ -76,31 +76,46 @@ def load_interactions(path: Path) -> list[dict]:
     return rows
 
 
+def _summary(rows: list[dict], models: list[str]) -> dict:
+    ins = [r["input_tokens"] for r in rows]
+    outs = [r["output_tokens"] for r in rows]
+    summary = {
+        "interactions": len(rows),
+        "input_tokens_median": statistics.median(ins), "output_tokens_median": statistics.median(outs),
+        "input_tokens_total": sum(ins), "output_tokens_total": sum(outs),
+        "llm_calls_total": sum(r["llm_calls"] for r in rows),
+        "per_model": {},
+    }
+    for m in models:
+        costs = [r["cost_usd"][m] for r in rows]
+        summary["per_model"][m] = {
+            "median_usd_per_interaction": round(statistics.median(costs), 6),
+            "mean_usd_per_interaction": round(statistics.mean(costs), 6),
+            "max_usd_per_interaction": round(max(costs), 6),
+            "total_usd": round(sum(costs), 6),
+            "usd_per_1000_interactions_at_mean": round(statistics.mean(costs) * 1000, 2),
+        }
+    return summary
+
+
 def simulate(rows: list[dict], models: list[str]) -> dict:
-    priced = []
-    for r in rows:
-        priced.append({**r, "cost_usd": {m: round(cost_usd(r["input_tokens"], r["output_tokens"], m), 6) for m in models}})
-    with_llm = [r for r in priced if r["input_tokens"] or r["output_tokens"]]
-    summary: dict = {"interactions": len(priced), "interactions_with_llm_tokens": len(with_llm)}
-    if with_llm:
-        ins = [r["input_tokens"] for r in with_llm]
-        outs = [r["output_tokens"] for r in with_llm]
-        summary.update({
-            "input_tokens_median": statistics.median(ins), "output_tokens_median": statistics.median(outs),
-            "input_tokens_total": sum(ins), "output_tokens_total": sum(outs),
-            "llm_calls_total": sum(r["llm_calls"] for r in with_llm),
-        })
-        summary["per_model"] = {}
-        for m in models:
-            costs = [r["cost_usd"][m] for r in with_llm]
-            summary["per_model"][m] = {
-                "median_usd_per_interaction": round(statistics.median(costs), 6),
-                "mean_usd_per_interaction": round(statistics.mean(costs), 6),
-                "max_usd_per_interaction": round(max(costs), 6),
-                "usd_per_1000_interactions_at_mean": round(statistics.mean(costs) * 1000, 2),
-            }
-    return {"prices_as_of": PRICES_AS_OF, "prices_usd_per_mtok": {m: PRICES_USD_PER_MTOK[m] for m in models},
-            "caveats": CAVEATS, "summary": summary, "interactions": priced}
+    """Only interactions where the model actually consumed tokens are priced; answers the
+    deterministic path served without calling the model (0 tokens) are excluded, not
+    counted as $0, so they do not dilute the per-interaction cost."""
+    priced = [{**r, "cost_usd": {m: round(cost_usd(r["input_tokens"], r["output_tokens"], m), 6) for m in models}}
+              for r in rows if r["input_tokens"] or r["output_tokens"]]
+    excluded = [r for r in rows if not (r["input_tokens"] or r["output_tokens"])]
+    groups: dict[str, list[dict]] = {}
+    for r in priced:
+        groups.setdefault(r["source"], []).append(r)
+    return {
+        "prices_as_of": PRICES_AS_OF, "prices_usd_per_mtok": {m: PRICES_USD_PER_MTOK[m] for m in models},
+        "caveats": CAVEATS,
+        "excluded_without_tokens": [{"source": r["source"], "question": r["question"]} for r in excluded],
+        "summary": _summary(priced, models) if priced else None,
+        "by_source": {src: _summary(g, models) for src, g in groups.items()},
+        "interactions": priced,
+    }
 
 
 def main(argv=None) -> int:
@@ -132,24 +147,26 @@ def main(argv=None) -> int:
     print("SIMULACIÓN de costo con la API de Anthropic (no es un costo real del proyecto)")
     for line in CAVEATS:
         print("  -", line)
-    s = result["summary"]
-    print(f"\nInteracciones: {s['interactions']} · con tokens del LLM: {s['interactions_with_llm_tokens']}")
-    if "per_model" not in s:
-        print("Ninguna interacción usó el LLM (todas deterministas): costo simulado $0.")
+    print(f"\nExcluidas por no usar el modelo (0 tokens): {len(result['excluded_without_tokens'])}")
+    if not result["summary"]:
+        print("Ninguna interacción usó el LLM: no hay nada que simular.")
         return 0
-    print(f"Tokens por interacción (mediana): {s['input_tokens_median']} de entrada + {s['output_tokens_median']} de salida")
-    print(f"\n{'Modelo':20} {'USD/interacción (mediana)':>26} {'USD por 1,000 interacciones':>28}"
-          + (f" {'MXN por 1,000':>14}" if args.usd_mxn else ""))
-    for m, v in s["per_model"].items():
-        line = f"{m:20} {v['median_usd_per_interaction']:>26.6f} {v['usd_per_1000_interactions_at_mean']:>28.2f}"
-        if args.usd_mxn:
-            line += f" {v['usd_per_1000_interactions_at_mean'] * args.usd_mxn:>14.2f}"
-        print(line)
+    for src, s in result["by_source"].items():
+        print(f"\n== {src}: {s['interactions']} interacciones con tokens, {s['llm_calls_total']} llamadas al modelo")
+        print(f"   Tokens por interacción (mediana): {s['input_tokens_median']} entrada + {s['output_tokens_median']} salida"
+              f" · total {s['input_tokens_total']} + {s['output_tokens_total']}")
+        print(f"   {'Modelo':20} {'USD/interacción (mediana)':>26} {'USD total':>11} {'USD por 1,000':>14}"
+              + (f" {'MXN por 1,000':>14}" if args.usd_mxn else ""))
+        for m, v in s["per_model"].items():
+            line = (f"   {m:20} {v['median_usd_per_interaction']:>26.6f} {v['total_usd']:>11.6f}"
+                    f" {v['usd_per_1000_interactions_at_mean']:>14.2f}")
+            if args.usd_mxn:
+                line += f" {v['usd_per_1000_interactions_at_mean'] * args.usd_mxn:>14.2f}"
+            print(line)
     print("\nDetalle por pregunta (USD):")
     for r in result["interactions"]:
-        if r["input_tokens"] or r["output_tokens"]:
-            costs = "  ".join(f"{m.replace('claude-', '')}={r['cost_usd'][m]:.5f}" for m in models)
-            print(f"  {r['input_tokens']:>6}+{r['output_tokens']:<5} {costs}  {r['question'][:70]}")
+        costs = "  ".join(f"{m.replace('claude-', '')}={r['cost_usd'][m]:.5f}" for m in models)
+        print(f"  {r['source'].split(':')[-1]:10} {r['input_tokens']:>6}+{r['output_tokens']:<5} {costs}  {r['question'][:60]}")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         if args.usd_mxn:
