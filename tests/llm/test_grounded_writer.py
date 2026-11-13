@@ -380,16 +380,16 @@ def test_inventory_rows_swapped_dropped_or_renamed_are_rejected(writer_factory, 
     assert not out.generated and out.answer == A2_VERIFIED and out.fallback_reason == "validacion_fallida"
 
 
-def test_short_answer_skips_generation_and_preserves_deterministic_result(writer_factory):
+def test_short_answer_is_generated_when_model_enabled(writer_factory):
     writer, fake = writer_factory(ollama_reply("Total: 0 tickets."))
     out = _rewrite(
         writer, verified="Tickets críticos pendientes, por tienda:\nTotal: 0 tickets.",
         question="¿Cuántos tickets críticos siguen abiertos?"
     )
-    assert not out.generated
-    assert out.llm_calls == 0 and out.fallback_reason == "redaccion_innecesaria"
-    assert out.answer == "Tickets críticos pendientes, por tienda:\nTotal: 0 tickets."
-    assert fake.requests == []
+    assert out.generated
+    assert out.llm_calls == 1 and out.fallback_reason is None
+    assert out.answer == "Total: 0 tickets."
+    assert len(fake.requests) == 1
 
 
 def test_multirow_prompt_explicitly_requires_all_rows():
