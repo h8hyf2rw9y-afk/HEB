@@ -126,17 +126,68 @@ def _key_terms(text: str) -> set[str]:
     return {re.sub(r"[\s-]", "", m) for m in _KEY_RE.findall(_plain(text))}
 
 
+# These are not arbitrary keywords: changing their meaning can route to a
+# different company procedure (purchase receipt != IT support ticket).
+_SUBJECT_RE = re.compile(
+    r"\b(?:licuadora|electrodomestico|electronico|"
+    r"ticket de compra|comprobante de compra|ticket de soporte|mesa de servicio|"
+    r"tarjeta original|tarjeta de credito|tarjeta de debito|"
+    r"sin ticket|sin tarjeta|reembolso|devolucion|"
+    r"colaborador|empleado|trabajador|incapacidad|despido)\b"
+)
+
+
+def _subject_terms(text: str) -> set[str]:
+    return set(_SUBJECT_RE.findall(_plain(text)))
+
+
+def _tool_query(call: dict, original: str) -> tuple[str, str | None]:
+    """Parse only the declared argument key; reject unknown/malformed arguments.
+
+    The original question is the safe fallback when the model drops identifying
+    constraints or substitutes a topic (receipt vs card, returns vs IT support).
+    """
+    name = call.get("name")
+    key = {"consultar_datos_tienda": "pregunta", "buscar_politicas": "consulta"}.get(name)
+    args = call.get("arguments")
+    if key is None or not isinstance(args, dict) or set(args) != {key}:
+        return original[:1000], "argumentos_no_validos"
+    query = args.get(key)
+    if not isinstance(query, str) or not query.strip() or len(query) > 1000:
+        return original[:1000], "argumentos_no_validos"
+    query = query.strip()
+    original_keys = _key_terms(original) | _subject_terms(original)
+    query_keys = _key_terms(query) | _subject_terms(query)
+    if original_keys - query_keys:
+        return original[:1000], f"restricciones_omitidas: {sorted(original_keys - query_keys)}"
+    if _subject_terms(query) - _subject_terms(original):
+        # A tool query may add helpful scope, but inventing a different
+        # product/receipt/document topic requires confirmation.
+        introduced = _subject_terms(query) - _subject_terms(original)
+        if "ticket de soporte" in introduced or "mesa de servicio" in introduced:
+            return original[:1000], f"tema_sustituido: {sorted(introduced)}"
+    return query, None
+
+
 class ToolAgent:
     def __init__(self, settings: LLMSettings, tools: dict[str, ToolFn], client: OllamaChatClient | None = None):
         self.settings = settings
         self.tools = tools
         self.client = client or OllamaChatClient(settings.base_url, settings.model, settings.timeout_s)
 
-    def run(self, question: str, previous_question: str | None = None) -> AgentOutcome:
+    def run(self, question: str, previous_question: str | None = None, history: list[str] | None = None) -> AgentOutcome:
         """Never raises. ``handled=False`` means: use the deterministic pipeline."""
         out = AgentOutcome(handled=False, model=self.settings.model)
-        user = question if not previous_question else (
-            f"{question}\n\n(Pregunta anterior de la misma gerente, solo como contexto: {previous_question})")
+        # Conversation history is client-supplied context, never verified policy
+        # evidence. Keep at most six user turns; the backend stores no session.
+        recent = [h[:400] for h in (history or [])[-6:] if isinstance(h, str) and h.strip()]
+        if not recent and previous_question:
+            recent = [previous_question[:400]]
+        context = "\n".join(f"- {turn}" for turn in recent)
+        user = question if not context else (
+            f"Historial reciente (solo contexto del usuario, NO es evidencia empresarial):\n{context}"
+            f"\n\nPregunta actual que debes responder: {question}"
+        )
         messages: list[dict] = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}, {"role": "user", "content": user}]
         results: list[ToolResult] = []
         final_text = ""
@@ -196,9 +247,9 @@ class ToolAgent:
             return out
 
         answered = [r for r in results if r.status == "answered"]
-        if not answered:
-            # Abstentions/clarifications are shown verbatim; the model's prose is discarded.
-            return self._verified(out, results, f"estado_{results[0].status}_no_se_redacta", start)
+        if len(answered) != len(results):
+            # Do not silently omit the unanswerable half of a mixed request.
+            return self._verified(out, results, "resultado_parcial_no_verificado", start)
 
         kind = "politicas" if any(r.kind == "politicas" for r in answered) else "datos"
         verified = "\n\n".join(r.answer for r in answered)
@@ -223,13 +274,9 @@ class ToolAgent:
         if fn is None:
             record["status"] = "herramienta_desconocida"
             return None, record
-        query = next((str(v) for v in args.values() if isinstance(v, str) and v.strip()), "") or question
-        # Guard against the model changing the period, store or SKU on the way to the tool.
-        missing = _key_terms(question) - _key_terms(query)
-        if missing:
-            record["warning"] = f"la consulta del modelo omitía {sorted(missing)}; se usó la pregunta original"
-            query = question
-        query = query[:1000]
+        query, warning = _tool_query(call, question)
+        if warning:
+            record["warning"] = f"{warning}; se usó la pregunta original"
         record["query"] = query
         try:
             result = fn(query)
@@ -243,11 +290,15 @@ class ToolAgent:
     def _verified(self, out: AgentOutcome, results: list[ToolResult], reason: str, start: float) -> AgentOutcome:
         """Show the tools' verified output verbatim (the model chose the query, not the words)."""
         answered = [r for r in results if r.status == "answered"]
-        chosen = answered or results[:1]
+        partial = len(answered) != len(results)
+        chosen = results if partial else answered
         out.handled = True
         out.generated = False
         out.fallback_reason = reason
-        out.status = "answered" if answered else results[0].status
+        out.status = ("needs_clarification" if answered and partial else
+                      results[0].status if partial else "answered")
+        if partial:
+            out.warnings.append("Algunas partes de la consulta no cuentan con evidencia suficiente.")
         out.kind = "politicas" if any(r.kind == "politicas" for r in chosen) else "datos"
         out.answer = "\n\n".join(r.answer for r in chosen)
         out.evidence = [e for r in chosen for e in r.evidence]
