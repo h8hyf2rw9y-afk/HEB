@@ -107,6 +107,74 @@ def _requested_store(question: str, stores_path: Path) -> tuple[str | None, str 
     return None, None
 
 
+
+def _compare_two_store_products(question: str, data_dir: Path) -> AnalyticalAnswer | None:
+    """Compare top selling products across TWO explicitly named stores.
+
+    This is a parameterized SQL template, never model-supplied SQL. If the
+    intent is not explicit, leave it to the usual analytics router.
+    """
+    q = plain(question)
+    if not re.search(r"\b(?:compara\w*|comparacion|versus|vs)\b", q):
+        return None
+    if not re.search(r"\b(?:productos?|sku)\b", q):
+        return None
+    stores_path = data_dir / "tiendas.csv"
+    sales_path = data_dir / "ventas.csv"
+    products_path = data_dir / "catalogo_productos.csv"
+    if not all(p.is_file() for p in (stores_path, sales_path, products_path)):
+        return _missing(question, "Faltan los CSV de ventas, tiendas o productos.")
+    with stores_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    matched = [
+        item for item in rows
+        if plain(item.get("nombre", "")).removeprefix("tienda ") in q
+        or re.search(r"\b" + re.escape(plain(item.get("tienda_id", ""))) + r"\b", q)
+    ]
+    if len(matched) != 2:
+        return None
+    if re.search(r"\b20\d{2}\b", q) and any(year != "2026" for year in re.findall(r"\b20\d{2}\b", q)):
+        return _missing(question, "Las ventas disponibles abarcan junio a agosto de 2026.")
+    start, end, period = _period(question)
+    if period == "multiple":
+        return _missing(question, "Especifica un solo mes para esta comparación.")
+    if re.search(r"\b(septiembre|octubre|noviembre|diciembre|enero|febrero|marzo|abril|mayo)\b", q):
+        return _missing(question, "Las ventas disponibles abarcan junio a agosto de 2026.")
+    import duckdb
+
+    sql = """
+        SELECT t.nombre, p.nombre, SUM(v.venta_neta_mxn) AS venta
+        FROM read_csv_auto(?) v
+        JOIN read_csv_auto(?) t ON v.tienda_id = t.tienda_id
+        JOIN read_csv_auto(?) p ON v.sku = p.sku
+        WHERE v.fecha >= CAST(? AS DATE) AND v.fecha < CAST(? AS DATE)
+          AND v.tienda_id IN (?, ?)
+        GROUP BY t.nombre, p.nombre
+        ORDER BY t.nombre, venta DESC, p.nombre
+    """
+    with duckdb.connect() as con:
+        results = con.execute(sql, [
+            str(sales_path), str(stores_path), str(products_path),
+            start, end, matched[0]["tienda_id"], matched[1]["tienda_id"],
+        ]).fetchall()
+    lines = []
+    for item in matched:
+        name = item["nombre"]
+        ranked = [(product, amount) for store, product, amount in results if store == name][:5]
+        lines.append(f"{name}:")
+        lines.extend(f"- {product}: {_money(amount)}" for product, amount in ranked)
+        if not ranked:
+            lines.append("- No hay ventas de productos registradas para el periodo.")
+    return AnalyticalAnswer(
+        f"Comparación de productos por ventas netas ({period}; máximo 5 por tienda):\n"
+        + "\n".join(lines)
+        + "\nEsta comparación describe ventas observadas; no demuestra sus causas.",
+        "answered",
+        [_source("ventas.csv", period), _source("tiendas.csv", "tienda_id"),
+         _source("catalogo_productos.csv", "sku")],
+        "sales_comparison",
+    )
+
 def _missing(question: str, reason: str) -> AnalyticalAnswer:
     return AnalyticalAnswer(
         "No puedo obtener una cifra confiable de los CSV para esa pregunta. " + reason,
@@ -119,6 +187,10 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     q = plain(question)
     if not looks_like_data(question):
         return _missing(question, "La pregunta no corresponde a una consulta analítica identificable.")
+    # Recognize multi-store comparison BEFORE one-store resolution.
+    comparison = _compare_two_store_products(question, data_dir)
+    if comparison is not None:
+        return comparison
     import duckdb
 
     sales = data_dir / "ventas.csv"
