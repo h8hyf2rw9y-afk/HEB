@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+from uuid import uuid4
 
 import httpx
 import streamlit as st
@@ -32,10 +33,10 @@ def health_check(base_url: str) -> tuple[bool, str]:
 
 
 def send_question(base_url: str, question: str, previous_question: str | None = None,
-                  history: list[str] | None = None) -> dict:
+                  history: list[str] | None = None, conversation_id: str | None = None) -> dict:
     response = httpx.post(
         f"{base_url}/chat",
-        json={"question": question, "conversation_id": None,
+        json={"question": question, "conversation_id": conversation_id,
               "previous_question": previous_question,
               "history": (history or [])[-6:]},
         timeout=REQUEST_TIMEOUT_SECONDS,
@@ -202,11 +203,22 @@ def main() -> None:
 
     st.subheader("Consultas")
     st.caption("Pregunta por las ventas de junio a agosto de 2026, el inventario, los tickets o las políticas internas.")
-    st.caption("La interfaz envía hasta seis preguntas anteriores para seguimientos. El servidor no guarda sesiones ni considera el historial como evidencia de políticas.")
+    st.caption("La conversación conserva hasta seis preguntas previas durante 30 minutos de inactividad (solo en memoria local). El historial no es evidencia de políticas; «Nueva conversación» borra la sesión.")
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "conversation_id" not in st.session_state:
+        st.session_state.conversation_id = uuid4().hex
     if st.button("Nueva conversación"):
+        try:
+            httpx.post(
+                f"{base_url.rstrip('/')}/chat/reset",
+                json={"conversation_id": st.session_state.conversation_id},
+                timeout=2.0,
+            )
+        except httpx.HTTPError:
+            pass  # Session will expire on its own if the API is unavailable.
         st.session_state.messages = []
+        st.session_state.conversation_id = uuid4().hex
         st.rerun()
 
     for message in st.session_state.messages:
@@ -234,6 +246,7 @@ def main() -> None:
                     base_url.rstrip("/"), question,
                     recent_question_context(st.session_state.messages),
                     recent_user_history(st.session_state.messages),
+                    st.session_state.conversation_id,
                 )
                 answer = result["answer"]
                 st.markdown(display_answer(answer))
