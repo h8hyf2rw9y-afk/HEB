@@ -277,3 +277,15 @@ def test_obviously_wrong_tool_family_is_rejected_without_query_execution():
 def test_mixed_policy_and_data_intent_does_not_force_one_tool():
     from app.llm.agent import _obvious_tool
     assert _obvious_tool("Ventas netas y procedimiento de devolución de mercancía") is None
+
+
+
+def test_model_cannot_substitute_named_store_in_tool_request():
+    from app.llm.agent import _tool_query
+    original = "¿Cuánto vendió Tienda Valle Norte en julio de 2026?"
+    changed, warning = _tool_query(
+        {"name": "consultar_datos_tienda",
+         "arguments": {"pregunta": "¿Cuánto vendió Tienda Cumbres en julio de 2026?"}},
+        original,
+    )
+    assert changed == original and warning == "tienda_omitida_o_sustituida"
