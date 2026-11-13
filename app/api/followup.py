@@ -33,18 +33,24 @@ def _top_store(previous: VerifiedTurn, data_dir: Path) -> str | None:
     """Use the first ranked result from an actual sales CSV answer."""
     if not re.search(r"\b(?:tienda|sucursal)\b", _plain(previous.question)):
         return None
+    # Recompute the previous analytical answer from the CSV. Even a model
+    # redaction that passed validation must not become an authority on rank.
+    from app.tools.analytics import answer_data_question
+    canonical = answer_data_question(previous.question, data_dir)
+    if canonical.status != "answered":
+        return None
     # A re-computed total for a single explicitly named store remains a
     # valid anchor for the next drill-down, even if no ranking is printed.
-    has_rank = bool(re.search(r"(?m)^\s*1\.\s+", previous.answer))
-    if not has_rank and not re.search(r"\b(?:tienda|sucursal)\b", _plain(previous.answer)):
+    has_rank = bool(re.search(r"(?m)^\s*1\.\s+", canonical.answer))
+    if not has_rank and not re.search(r"\b(?:tienda|sucursal)\b", _plain(canonical.answer)):
         return None
     path = data_dir / "tiendas.csv"
     if not path.is_file():
         return None
     top_line = next(
-        (line for line in previous.answer.splitlines() if re.match(r"^\s*1\.\s+", line)),
+        (line for line in canonical.answer.splitlines() if re.match(r"^\s*1\.\s+", line)),
         "",
-    ) if has_rank else previous.answer
+    ) if has_rank else canonical.answer
     with path.open(encoding="utf-8-sig", newline="") as handle:
         known = [row.get("nombre", "").strip() for row in csv.DictReader(handle)]
     matches = [name for name in known if name and _plain(name) in _plain(top_line)]
