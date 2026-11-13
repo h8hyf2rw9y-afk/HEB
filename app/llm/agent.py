@@ -14,6 +14,7 @@ caller to run the deterministic pipeline; nothing unvalidated reaches the user.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import re
@@ -143,6 +144,26 @@ def _subject_terms(text: str) -> set[str]:
     return set(_SUBJECT_RE.findall(_plain(text)))
 
 
+def _store_terms(text: str) -> set[str]:
+    """Protect named stores from model substitution; catalogue is authoritative."""
+    from app.tools.analytics import DATA_DIR
+    path = DATA_DIR / "tiendas.csv"
+    if not path.is_file():
+        return set()
+    q = _plain(text)
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = csv.DictReader(handle)
+        return {
+            _plain(row["nombre"])
+            for row in rows
+            if row.get("nombre") and (
+                _plain(row["nombre"]) in q
+                or _plain(row["nombre"]).removeprefix("tienda ") in q
+                or bool(re.search(r"\b" + re.escape(_plain(row.get("tienda_id", ""))) + r"\b", q))
+            )
+        }
+
+
 def _obvious_tool(question: str) -> str | None:
     """Only rule out clearly wrong tool families; leave ambiguous cases to Llama."""
     q = _plain(question)
@@ -176,6 +197,9 @@ def _tool_query(call: dict, original: str) -> tuple[str, str | None]:
     if not isinstance(query, str) or not query.strip() or len(query) > 1000:
         return original[:1000], "argumentos_no_validos"
     query = query.strip()
+    named_stores = _store_terms(original)
+    if named_stores and not named_stores <= _store_terms(query):
+        return original[:1000], "tienda_omitida_o_sustituida"
     original_keys = _key_terms(original) | _subject_terms(original)
     query_keys = _key_terms(query) | _subject_terms(query)
     if original_keys - query_keys:
