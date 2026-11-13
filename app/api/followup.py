@@ -20,7 +20,7 @@ SALES_RE = re.compile(r"\b(?:venta\w*|vend\w*|factur\w*)\b")
 FOLLOWUP_RE = re.compile(
     r"\b(?:esa tienda|esa sucursal|esa misma tienda|le fue|sus ventas|"
     r"cuanto vendio|que productos|cuales productos|sus productos|"
-    r"y en (?:junio|julio|agosto)|y cuanto|en (?:junio|julio|agosto))\b"
+    r"y en (?:junio|julio|agosto)|y cuanto|en (?:junio|julio|agosto)|por que|a que se debe)\b"
 )
 
 
@@ -98,6 +98,23 @@ def resolve_data_followup(question: str, previous: VerifiedTurn | None,
     explicit_years = re.findall(r"\b20\d{2}\b", q)
     if explicit_years and any(year != "2026" for year in explicit_years):
         return None
+
+    # "Why?" is not proof of causality. Provide a fresh, verifiable
+    # product-sales comparison of the two ranked stores instead.
+    if (store and re.search(r"\b(?:por que|a que se debe)\b", q)
+            and re.search(r"\b(?:mas|mayor|mejor|ranking)\b", prior)):
+        from app.tools.analytics import answer_data_question
+        canonical = answer_data_question(previous.question, data_dir)
+        second_line = next(
+            (line for line in canonical.answer.splitlines()
+             if re.match(r"^\s*2\.\s+", line)), ""
+        )
+        if stores_path.is_file():
+            alternatives = [name for name in names
+                            if name != store and _plain(name) in _plain(second_line)]
+            if len(alternatives) == 1:
+                return (f"Compara productos de {store} y {alternatives[0]} "
+                        f"en {month} de 2026.")
 
     if (len(named) == 1 and store and named[0] != store
             and re.search(r"\b(?:compar\w*|versus|vs)\b", q)
