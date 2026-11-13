@@ -53,9 +53,9 @@ def classify_assistant_question(question: str) -> str | None:
     A greeting combined with a health question takes precedence over greeting.
     """
     q = _plain(question).strip().strip(" ¡!¿?.,;:")
-    # Explicit introspection about this assistant takes precedence, even if
-    # the user says "asistente H-E-B" or "modelo de tienda".
-    if _WHO.search(q) and re.search(r"\b(?:tu|te|fuiste|eres|crearon|creado|creada)\b", q):
+    # Questions about why the assistant was made are meta-conversation;
+    # "¿Quién eres para decidir un despido?" is still a workplace question.
+    if re.search(r"\b(?:para que (?:fuiste|has sido) cread[oa]|por que (?:fuiste|has sido) cread[oa]|cual es tu proposito|para que te crearon)\b", q):
         return "identity"
     if _WORKPLACE_CONTEXT.search(q):
         return None
