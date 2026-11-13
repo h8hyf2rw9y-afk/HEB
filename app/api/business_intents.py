@@ -33,6 +33,55 @@ _STORE_COUNT = re.compile(
     r"(?:tiendas?|sucursales?)\b"
     r"|\b(?:tiendas?|sucursales?)\b.{0,40}\b(?:tengo|tenemos|hay|existen|registradas)\b"
 )
+_PRODUCT_COUNT = re.compile(
+    r"\b(?:cuantos?|numero|cantidad|total)\s+(?:de\s+)?(?:productos?|sku)\b"
+    r".{0,70}\b(?:cada|por|en)\s+(?:una?\s+)?(?:tiendas?|sucursales?)\b"
+    r"|\b(?:cuantos?|numero|cantidad|total)\s+(?:de\s+)?(?:sku|productos?)\b"
+    r".{0,70}\b(?:tiene|hay)\b.{0,20}\b(?:tiendas?|sucursales?)\b"
+)
+
+def _product_count_answer(data_dir: Path) -> RoutedAnswer:
+    """Count distinct inventory SKUs per store at the documented snapshot.
+
+    A catalogued product is not necessarily stocked. Keep this count scoped
+    explicitly to the inventory snapshot and avoid discussing reorders.
+    """
+    inventory, stores = data_dir / "inventario.csv", data_dir / "tiendas.csv"
+    if not inventory.is_file() or not stores.is_file():
+        return RoutedAnswer(
+            "No están disponibles inventario.csv y tiendas.csv para contar SKU por tienda.",
+            "insufficient_data", [],
+        )
+    try:
+        with stores.open(encoding="utf-8-sig", newline="") as handle:
+            store_rows = list(csv.DictReader(handle))
+        with inventory.open(encoding="utf-8-sig", newline="") as handle:
+            inventory_rows = list(csv.DictReader(handle))
+        names = {r["tienda_id"]: r["nombre"] for r in store_rows
+                 if r.get("tienda_id") and r.get("nombre")}
+        sku_counts = {code: set() for code in names}
+        for row in inventory_rows:
+            code, sku = row.get("tienda_id", ""), row.get("sku", "")
+            if code in sku_counts and sku:
+                sku_counts[code].add(sku)
+        if not names:
+            return RoutedAnswer("No hay tiendas válidas en el catálogo.", "insufficient_data", [])
+        lines = [f"- {names[code]}: {len(sku_counts[code])} SKU registrados."
+                 for code in sorted(names)]
+        return RoutedAnswer(
+            "Productos distintos por tienda según inventario.csv "
+            "(corte del 1 de septiembre de 2026):\n" + "\n".join(lines)
+            + "\nEsto cuenta SKU registrados, no productos disponibles para venta "
+            "ni unidades en existencia.",
+            "answered",
+            [{"source_type": "csv", "source": "inventario.csv",
+              "reference": "SKU por tienda; corte 2026-09-01"},
+             {"source_type": "csv", "source": "tiendas.csv", "reference": "tienda_id"}],
+        )
+    except (OSError, UnicodeError, csv.Error, KeyError):
+        return RoutedAnswer("No pude contar los SKU del inventario.", "error", [])
+
+
 _SOURCE_DISCOVERY = re.compile(
     r"\b(que|cuales|lista|listar|muestra|mostrar|dime)\b.{0,65}"
     r"\b(documentos?|archivos?|fuentes|datos|informacion)\b"
@@ -113,6 +162,8 @@ def route_business_question(
     q = plain(question).strip(" ¡!¿?.,;:")
     if _STORE_COUNT.search(q):
         return _store_answer(data_dir)
+    if _PRODUCT_COUNT.search(q) and not re.search(r"\b(?:ventas?|vend\w*|reorden|agotad\w*|stock bajo)\b", q):
+        return _product_count_answer(data_dir)
     if _SOURCE_DISCOVERY.search(q) and not re.search(
         r"\b(establece|dice|segun|sobre|acerca|respecto|devolucion|reembolso|merma|"
         r"caducidad|inventario|venta|salario|colaborador|empleado)\b", q
