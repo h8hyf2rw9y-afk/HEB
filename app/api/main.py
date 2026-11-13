@@ -218,6 +218,25 @@ def chat(request: ChatRequest) -> ChatResponse:
     # Resolve only narrowly-defined elliptical analytics against the latest
     # verified CSV result. Never treat old answers as fresh facts.
     latest = SESSIONS.latest_verified(request.conversation_id)
+    # Missing historical months have a known, exact boundary: do not spend
+    # two Ollama calls deciding whether data outside the CSV exists.
+    from app.tools.analytics import plain as _plain_data
+    q_normalized = _plain_data(request.question)
+    if (latest is not None and latest.is_grounded and latest.kind == "grounded_data"
+            and any(e.get("source") == "ventas.csv" for e in latest.evidence)
+            and re.search(r"\b(?:enero|febrero|marzo|abril|mayo|septiembre|octubre|noviembre|diciembre)\b", q_normalized)
+            and re.search(r"\b(?:le fue|vend\w*|ventas|factur\w*)\b", q_normalized)):
+        SESSIONS.add(request.conversation_id, request.question.strip())
+        return ChatResponse(
+            answer="No tengo ventas registradas para ese mes: el archivo de ventas "
+                   "disponible abarca únicamente junio, julio y agosto de 2026. "
+                   "Puedo comparar cualquiera de esos tres meses.",
+            status="insufficient_data",
+            metrics=Metrics(
+                answer_mode="grounded_data",
+                warnings=["El periodo solicitado queda fuera de la cobertura del CSV."],
+            ),
+        )
     resolved = (resolve_data_followup(request.question, latest)
                 or resolve_policy_followup(request.question, latest))
     effective_request = request.model_copy(update={"question": resolved}) if resolved else request
