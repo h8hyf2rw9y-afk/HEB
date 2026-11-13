@@ -395,17 +395,27 @@ def _deterministic_chat(request: ChatRequest, start: float, writer: GroundedWrit
                 metrics=Metrics(answer_mode="needs_context",
                                 latency_ms=round((time.perf_counter() - start) * 1000, 2)),
             )
-        # The exact policy passage is displayed: generative rewriting is optional
-        # elsewhere, but an incorrect rewiring of a receipt would be unacceptable.
+        # A model may explain verified policy evidence, but policy rewriting
+        # remains strictly validated: never relax citations or precedence.
+        conflicts = [item.model_dump() for item in result.conflicts]
+        prose = writer.rewrite(
+            question=question, kind="politicas", status="answered",
+            verified_answer=result.answer, evidence=evidence, conflicts=conflicts,
+        )
         return ChatResponse(
-            answer=result.answer, status="answered", evidence=evidence,
-            conflicts=[item.model_dump() for item in result.conflicts],
+            answer=prose.answer, status="answered", evidence=evidence,
+            conflicts=conflicts,
             metrics=Metrics(
                 answer_mode="grounded_policy", retrieval_mode=result.metrics.retrieval_mode,
+                input_tokens=prose.input_tokens, output_tokens=prose.output_tokens,
+                total_tokens=prose.total_tokens, llm_calls=prose.llm_calls,
+                llm_model=prose.model if prose.llm_calls else None,
+                generation_latency_ms=prose.generation_latency_ms,
+                generated=prose.generated, fallback_reason=prose.fallback_reason,
                 embedding_calls=result.metrics.embedding_calls,
                 embedding_input_tokens=result.metrics.embedding_input_tokens,
                 embedding_latency_ms=result.metrics.embedding_latency_ms,
-                warnings=result.metrics.warnings,
+                warnings=result.metrics.warnings + prose.warnings,
                 latency_ms=round((time.perf_counter() - start) * 1000, 2),
             ),
         )
