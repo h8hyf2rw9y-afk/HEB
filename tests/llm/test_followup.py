@@ -77,3 +77,34 @@ def test_memory_never_persists_generated_answers_without_sources():
     SESSIONS.add(sid, "¿Qué tienda vendió más?", answer="Tienda inventada: 999 millones",
                  evidence=[], kind="general_unverified", status="answered")
     assert SESSIONS.latest_verified(sid) is None
+
+
+def test_comparison_reuses_verified_winner_and_month():
+    resolved = resolve_data_followup("Entonces compara sus productos con los de Cumbres", PREVIOUS)
+    assert resolved == "Compara productos de Tienda Valle Norte y Tienda Cumbres en agosto de 2026."
+
+
+def test_compare_two_explicit_stores_has_real_csv_sources():
+    from app.tools.analytics import answer_data_question
+    answer = answer_data_question(
+        "Compara productos de Tienda Valle Norte y Tienda Cumbres en agosto de 2026."
+    )
+    assert answer.status == "answered"
+    assert "Tienda Valle Norte" in answer.answer and "Tienda Cumbres" in answer.answer
+    assert "no demuestra sus causas" in answer.answer
+    assert {"ventas.csv", "tiendas.csv", "catalogo_productos.csv"} <= {
+        item["source"] for item in answer.evidence
+    }
+
+
+def test_api_can_drill_into_products_without_invented_causes():
+    sid = uuid4().hex
+    client.post("/chat", json={"question": PREVIOUS.question, "conversation_id": sid})
+    result = client.post("/chat", json={
+        "question": "Entonces compara sus productos con los de Cumbres",
+        "conversation_id": sid,
+    }).json()
+    assert result["status"] == "answered"
+    assert "Tienda Valle Norte" in result["answer"] and "Tienda Cumbres" in result["answer"]
+    assert "no demuestra sus causas" in result["answer"]
+    assert result["metrics"]["resolved_question"] is not None
