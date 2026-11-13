@@ -10,6 +10,10 @@ Asistente conversacional en español para analizar datos de tiendas y consultar 
 
 Video de presentación del ejercicio técnico: muestra el funcionamiento y la explicación de la solución. Puedes verlo directamente en Loom sin instalar el proyecto.
 
+## Documento de decisiones
+
+[📄 Ver el documento de decisiones](candidatos/plantilla_decisiones.md) (`candidatos/plantilla_decisiones.md`): qué construí y en qué orden, qué decidí no hacer, cómo sé que funciona, el costo por interacción medido con Qwen y qué haría con dos semanas más.
+
 ## Inicio rápido: objetivo de 10 minutos
 
 La meta es abrir el asistente en **menos de 10 minutos cuando ya están instalados Git, Python 3.11, Ollama y el modelo local**. La primera instalación de dependencias y la descarga del modelo (varios GB) pueden superar ese tiempo según el equipo y la conexión. **No se necesita API de pago.**
