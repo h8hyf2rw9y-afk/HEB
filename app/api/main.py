@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -66,7 +66,7 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     conversation_id: str | None = Field(default=None, max_length=128)
     previous_question: str | None = Field(default=None, max_length=4000)
-    history: list[str] = Field(default_factory=list, max_length=6)
+    history: list[Annotated[str, Field(max_length=400)]] = Field(default_factory=list, max_length=6)
 
 
 class Metrics(BaseModel):
