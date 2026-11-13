@@ -126,3 +126,14 @@ def test_policy_followup_requeries_instead_of_replaying_old_answer():
     assert "no tiene el ticket" in resolved
     assert resolve_policy_followup("¿Qué tienda vendió más en agosto?", previous) is None
     assert resolve_policy_followup("¿Y si no tiene el ticket?", PREVIOUS) is None
+
+
+
+def test_model_rewording_cannot_change_store_identity():
+    tampered = VerifiedTurn(
+        question=PREVIOUS.question,
+        answer="1. Tienda Cumbres: $999,999,999.99 MXN",
+        evidence=EVIDENCE, kind="grounded_data",
+    )
+    resolved = resolve_data_followup("¿Y cómo le fue en julio?", tampered)
+    assert resolved == "¿Cuánto vendió Tienda Valle Norte en julio de 2026?"
