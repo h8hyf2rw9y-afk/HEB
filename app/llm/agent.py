@@ -249,7 +249,10 @@ class ToolAgent:
         answered = [r for r in results if r.status == "answered"]
         if len(answered) != len(results):
             # Do not silently omit the unanswerable half of a mixed request.
-            return self._verified(out, results, "resultado_parcial_no_verificado", start)
+            # Preserve the historical abstention reason for a single failed tool.
+            reason = ("resultado_parcial_no_verificado" if answered else
+                      f"estado_{results[0].status}_no_se_redacta")
+            return self._verified(out, results, reason, start)
 
         kind = "politicas" if any(r.kind == "politicas" for r in answered) else "datos"
         verified = "\n\n".join(r.answer for r in answered)
