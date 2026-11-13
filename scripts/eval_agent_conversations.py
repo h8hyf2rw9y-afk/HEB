@@ -36,6 +36,14 @@ EPISODES = [
         ],
     },
     {
+        "name": "ventas_seguimientos_y_comparacion",
+        "turns": [
+            ("¿Qué tienda vendió más en agosto de 2026?", "consultar_datos_tienda"),
+            ("¿Y cómo le fue en julio?", "consultar_datos_tienda"),
+            ("Entonces compara sus productos con los de Cumbres", "consultar_datos_tienda"),
+        ],
+    },
+    {
         "name": "ventas_y_politicas",
         "turns": [
             ("¿Qué tienda vendió más en agosto de 2026?", "consultar_datos_tienda"),
@@ -106,6 +114,13 @@ def evaluate(base_url: str, timeout: float) -> dict:
                 "conflicts": data.get("conflicts", []),
                 "generated": metrics.get("generated", False),
                 "fallback_reason": metrics.get("fallback_reason"),
+                "resolved_question": metrics.get("resolved_question"),
+                "answer_mode": metrics.get("answer_mode"),
+                "grounded_source_matches": (
+                    any(source.endswith(".csv") for source in source_names)
+                    if expected_tool == "consultar_datos_tienda"
+                    else any(source.endswith(".pdf") for source in source_names)
+                ),
                 "tokens": metrics.get("total_tokens", 0),
                 "latency_ms": metrics.get("latency_ms", elapsed),
                 "requires_manual_review": True,
@@ -144,7 +159,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--out", default="data/eval_agent_conversations.json")
-    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--timeout", type=float, default=540.0)
     args = parser.parse_args()
     result = evaluate(args.base_url, args.timeout)
     target = Path(args.out)
