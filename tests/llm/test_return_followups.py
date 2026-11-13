@@ -192,3 +192,19 @@ def test_original_card_without_payment_card_uses_section_6_1_real_pdfs(monkeypat
         assert "Mesa de Servicio" not in data["answer"]
     finally:
         reset_retriever()
+
+
+
+def test_exchange_and_refund_comparison_needs_both_policy_concepts():
+    from app.api.return_intents import check_return_evidence, route_returns
+    question = "Se puede cambiar un producto o es decir un rembolso ?"
+    # The common misspelling "rembolso" should still be understood.
+    route = route_returns("¿Puedo cambiar un producto o es decir un reembolso?")
+    assert route is not None and route.kind == "exchange_vs_refund"
+    assert "diferencia" in route.query.lower()
+    source = [{"source": "procedimiento_devoluciones.pdf", "source_type": "pdf"}]
+    assert not check_return_evidence(
+        "exchange_vs_refund", status="answered",
+        answer="Sí se puede cambiar. [procedimiento_devoluciones.pdf, p. 1, sección: 2. Definiciones]",
+        evidence=source,
+    )
