@@ -190,7 +190,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     latest = SESSIONS.latest_verified(request.conversation_id)
     resolved = resolve_data_followup(request.question, latest)
     effective_request = request.model_copy(update={"question": resolved}) if resolved else request
-    response = _chat_once(effective_request)
+    response = _chat_once(effective_request, verified_context=latest)
     if resolved:
         response.metrics.resolved_question = resolved
     SESSIONS.add(
@@ -204,11 +204,17 @@ def chat(request: ChatRequest) -> ChatResponse:
     return response
 
 
-def _chat_once(request: ChatRequest) -> ChatResponse:
+def _chat_once(request: ChatRequest, verified_context=None) -> ChatResponse:
     start = time.perf_counter()
     question = request.question.strip()
     if _agent_applies(question):
-        out = AGENT.run(question, request.previous_question, request.history)
+        # A source-backed prior answer is context for the real ToolAgent only.
+        # Test doubles and older implementations keep the three-argument API.
+        if isinstance(AGENT, ToolAgent):
+            out = AGENT.run(question, request.previous_question, request.history,
+                            verified_context=verified_context)
+        else:
+            out = AGENT.run(question, request.previous_question, request.history)
         if out.handled:
             return ChatResponse(answer=out.answer, status=out.status, evidence=out.evidence,
                                 conflicts=out.conflicts, metrics=_agent_metrics(out, start))
