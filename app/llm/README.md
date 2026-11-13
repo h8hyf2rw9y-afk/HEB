@@ -70,6 +70,17 @@ Las respuestas con estado `insufficient_data`, `needs_clarification` o `error` *
 
 **Costo:** la inferencia es local, así que no hay costo por token de API. Sí hay costo de ejecución local: el modelo ocupa memoria (`load_duration` de Ollama) y CPU o GPU durante segundos por respuesta, frente a milisegundos del modo determinista. Los tokens de embeddings son otro consumo distinto, que se reporta por separado.
 
+## Latencia y tiempos de espera en Streamlit
+
+El agente puede invocar Ollama varias veces de forma secuencial (selección de herramienta + redacción, y hasta cuatro rondas). El frontend ya no impone un límite fijo de 30 s: utiliza `HEB_CHAT_TIMEOUT_S` (por defecto 540 s) para la petición completa. Puedes ajustarlo antes de iniciar Streamlit:
+
+```powershell
+$env:HEB_CHAT_TIMEOUT_S = "540"
+.\.venv\Scripts\python.exe -m streamlit run frontend/app.py
+```
+
+Si aún aparece `ReadTimeout`, revisa en la terminal FastAPI cuánto tardó la petición, el estado de Ollama y los tokens. No confundas un timeout de la interfaz con una caída confirmada de FastAPI. Las rutas de conteo de tiendas y listado de fuentes se contestan desde el catálogo local (sin esperar al modelo); preguntas generales sobre la identidad del asistente no consultan DuckDB.
+
 ## Evaluar conversaciones de varios turnos
 
 Con FastAPI iniciado en modo agente y Ollama operativo, ejecuta en otra terminal:
