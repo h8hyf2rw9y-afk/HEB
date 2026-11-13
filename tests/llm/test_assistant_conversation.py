@@ -104,3 +104,67 @@ def test_status_probe_does_not_claim_connectivity_on_error(monkeypatch):
 ])
 def test_business_phrasing_never_gets_assistant_meta_intent(question):
     assert assistant_chat.classify_assistant_question(question) is None
+
+
+@pytest.mark.parametrize("question", [
+    "Para que fuiste creado ?",
+    "¿Cuál es tu propósito?",
+    "¿Por qué fuiste creado?",
+])
+def test_origin_questions_remain_assistant_meta(question):
+    assert assistant_chat.classify_assistant_question(question) == "identity"
+
+
+def test_origin_question_never_calls_csv_when_agent_enabled(monkeypatch):
+    from app.llm.agent import AgentOutcome
+
+    class Agent:
+        settings = LLMSettings(enabled=True, mode="agente")
+
+        def run(self, *args, **kwargs):
+            raise AssertionError("Assistant origin questions must not call the agent")
+
+    monkeypatch.setattr(main, "AGENT", Agent())
+    monkeypatch.setattr(main, "LLM_SETTINGS", LLMSettings(enabled=False))
+    data = client.post("/chat", json={"question": "Para que fuiste creado ?"}).json()
+    assert data["status"] == "answered"
+    assert "asistente" in data["answer"].lower()
+    assert data["metrics"]["tool_calls"] == []
+
+
+def test_generic_off_topic_capability_claim_is_discarded(monkeypatch):
+    from app.llm.general import CasualResult
+
+    class Agent:
+        settings = LLMSettings(enabled=True, mode="agente")
+
+    monkeypatch.setattr(main, "AGENT", Agent())
+    monkeypatch.setattr(main, "generate_general_answer", lambda *a, **k:
+                        CasualResult(answer="Puedo darte recetas, consejos de cuidado personal y horóscopos.",
+                                     generated=True, model="llama3.2", llm_calls=1,
+                                     input_tokens=33, output_tokens=20))
+    response = client.post("/chat", json={"question": "Que puedes hacer por mi ?"}).json()
+    assert response["status"] == "answered"
+    assert response["metrics"]["fallback_reason"] == "respuesta_meta_fuera_de_alcance"
+    assert response["metrics"]["generated"] is False
+    assert "ventas" in response["answer"].lower()
+    assert response["metrics"]["llm_calls"] == 1
+
+
+def test_catalogue_queries_bypass_tool_agent_in_agent_mode(monkeypatch):
+    class Agent:
+        settings = LLMSettings(enabled=True, mode="agente")
+        def run(self, *args, **kwargs):
+            raise AssertionError("Exact catalogue queries must use verified routing")
+
+    monkeypatch.setattr(main, "AGENT", Agent())
+    count = client.post("/chat", json={"question": "Dime cuantas tiendas tengo ?"}).json()
+    assert count["status"] == "answered"
+    assert "4 tiendas" in count["answer"]
+    assert count["metrics"]["llm_calls"] == 0
+    sources = client.post("/chat", json={
+        "question": "¿Qué información tienes disponible para responder mis preguntas?"
+    }).json()
+    assert sources["status"] == "answered"
+    assert "ventas.csv" in sources["answer"]
+    assert sources["metrics"]["llm_calls"] == 0
