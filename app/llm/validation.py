@@ -292,3 +292,48 @@ def validate_rewrite(
 
 def has_injection(text: str) -> bool:
     return bool(INJECTION_RE.search(text))
+
+
+
+@dataclass(frozen=True)
+class ComposedRewrite:
+    """Final checked text; may retain an immutable evidence appendix."""
+    ok: bool
+    answer: str
+    failures: list[str]
+    evidence_appended: bool = False
+
+
+def compose_grounded_answer(*, kind: str, question: str, verified: str,
+                            candidate: str, allowed_sources: set[str],
+                            conflicts: list[dict] | None = None) -> ComposedRewrite:
+    """Accept model-authored prose while preserving every verified CSV row.
+
+    For exact policy rules/conflicts we do not loosen validation. For CSV
+    summaries, a short model explanation may omit lower-ranked stores.
+    Rather than rejecting it outright or trusting a partial table, attach
+    the original complete verified rows and validate the ENTIRE composite.
+    Any invented number, SKU, source, citation, unsafe text or contradiction
+    still fails. This does not replace semantic evaluation of prose.
+    """
+    strict = validate_rewrite(kind=kind, question=question, verified=verified,
+                              candidate=candidate, allowed_sources=allowed_sources,
+                              conflicts=conflicts)
+    if strict.ok:
+        return ComposedRewrite(True, candidate.strip(), [])
+    # Appending facts is only appropriate for CSV outputs without policy conflict.
+    # A model that invented facts or attempted instructions must not be shown.
+    if kind != "datos" or conflicts or not candidate.strip() or has_injection(candidate):
+        return ComposedRewrite(False, verified, strict.failures)
+    if not all(
+        issue.startswith(("cifras o fechas omitidas", "falta «", "cifras de «"))
+        for issue in strict.failures
+    ):
+        return ComposedRewrite(False, verified, strict.failures)
+    composite = candidate.strip() + "\n\n**Detalle verificado de los CSV:**\n" + verified
+    checked = validate_rewrite(kind=kind, question=question, verified=verified,
+                               candidate=composite, allowed_sources=allowed_sources,
+                               conflicts=conflicts)
+    if not checked.ok:
+        return ComposedRewrite(False, verified, checked.failures)
+    return ComposedRewrite(True, composite, [], evidence_appended=True)
