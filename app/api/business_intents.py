@@ -29,8 +29,9 @@ class RoutedAnswer:
 
 
 _STORE_COUNT = re.compile(
-    r"\b(cuant[oa]s?|numero|cantidad|total)\b.{0,60}\b(tiendas?|sucursales?)\b"
-    r"|\b(tiendas?|sucursales?)\b.{0,60}\b(tengo|tenemos|hay|existen|registradas)\b"
+    r"\b(?:cuantas?|cuantos?|numero|cantidad|total)\s+(?:de\s+)?(?:las\s+)?"
+    r"(?:tiendas?|sucursales?)\b"
+    r"|\b(?:tiendas?|sucursales?)\b.{0,40}\b(?:tengo|tenemos|hay|existen|registradas)\b"
 )
 _SOURCE_DISCOVERY = re.compile(
     r"\b(que|cuales|lista|listar|muestra|mostrar|dime)\b.{0,65}"
