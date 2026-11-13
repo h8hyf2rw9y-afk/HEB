@@ -205,6 +205,16 @@ def validate_rewrite(
     if extra:
         failures.append("cifras o fechas nuevas: " + ", ".join(sorted(extra)))
 
+    # Store catalogue IDs are not ordinary prose: when a model summarizes
+    # four stores, the exact T01/T02 identifiers must remain visible.
+    if re.search(r"(?m)^\\s*-\\s*T\\d{2}:", verified):
+        store_codes = set(re.findall(r"\\bT\\d{2}\\b", verified))
+        output_codes = set(re.findall(r"\\bT\\d{2}\\b", cand))
+        if store_codes - output_codes:
+            failures.append("códigos de tienda omitidos: " + ", ".join(sorted(store_codes - output_codes)))
+        if output_codes - store_codes:
+            failures.append("códigos de tienda desconocidos: " + ", ".join(sorted(output_codes - store_codes)))
+
     invented = sorted(c.citations - v_all.citations)
     if invented:
         failures.append("citas inexistentes: " + " ".join(invented))
@@ -338,7 +348,8 @@ def compose_grounded_answer(*, kind: str, question: str, verified: str,
             or "existencia" in summary or "punto de reorden" in summary):
         return ComposedRewrite(False, verified, strict.failures)
     if not all(
-        issue.startswith(("cifras o fechas omitidas", "falta «", "cifras de «"))
+        issue.startswith(("cifras o fechas omitidas", "falta «", "cifras de «",
+                          "códigos de tienda omitidos"))
         for issue in strict.failures
     ):
         return ComposedRewrite(False, verified, strict.failures)
