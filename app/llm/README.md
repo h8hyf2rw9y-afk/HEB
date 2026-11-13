@@ -70,6 +70,24 @@ Las respuestas con estado `insufficient_data`, `needs_clarification` o `error` *
 
 **Costo:** la inferencia es local, así que no hay costo por token de API. Sí hay costo de ejecución local: el modelo ocupa memoria (`load_duration` de Ollama) y CPU o GPU durante segundos por respuesta, frente a milisegundos del modo determinista. Los tokens de embeddings son otro consumo distinto, que se reporta por separado.
 
+## Resultados reales y modo rápido de datos (noviembre 2026)
+
+Una evaluación manual en Windows con `qwen3:4b-instruct` confirmó que el LLM puede tardar **17 a 147 segundos** por consulta y que muchas redacciones fueron descartadas por conservar solo parte de los resultados o alterar asignaciones de cifras a tiendas. El fallback verificado fue correcto: **no** debemos relajar la validación de montos para que el texto parezca más natural. Al preguntar por enero, la falta de datos es correcta: `ventas.csv` solo cubre junio–agosto de 2026. Los seguimientos con periodos ausentes ya no necesitan gastar llamadas al LLM para esa respuesta.
+
+El flujo permite activar una vía rápida opcional **solo para rankings exactos de tiendas y comparaciones de productos entre dos tiendas**. DuckDB ejecuta la plantilla SQL aprobada y devuelve cifras y fuentes directamente; las demás consultas continúan usando Ollama y sus comprobaciones. Actívala **antes de iniciar FastAPI**:
+
+```powershell
+$env:HEB_FAST_ANALYTICS = "true"
+$env:HEB_LLM_ENABLED = "true"
+$env:HEB_LLM_MODE = "agente"
+$env:HEB_LLM_MODEL = "qwen3:4b-instruct"
+.\.venv\Scripts\python.exe -m uvicorn app.api.main:app --port 8000
+```
+
+Con la vía rápida, `metrics.llm_calls=0` para esas consultas es **esperado**; no indica que Ollama esté caído. Para medir el desempeño completo de selección de herramientas del agente sin este atajo, usa `HEB_FAST_ANALYTICS=false` y reinicia FastAPI. Un conteo de productos por tienda se responde siempre del inventario usando SKU únicos por tienda; no es una medición de punto de reorden ni demuestra disponibilidad de unidades. Las preguntas causales como «¿por qué vendió más?» se pueden desglosar por diferencias observadas de productos, pero estas correlaciones no prueban causas reales.
+
+Una pregunta que confunde `cambio de producto` con `reembolso` debe recuperar evidencia de ambos conceptos, o pedir precisión sin afirmar una equivalencia inexistente. También se reconoce la grafía «rembolso».
+
 ## Latencia y tiempos de espera en Streamlit
 
 El agente puede invocar Ollama varias veces de forma secuencial (selección de herramienta + redacción, y hasta cuatro rondas). El frontend ya no impone un límite fijo de 30 s: utiliza `HEB_CHAT_TIMEOUT_S` (por defecto 540 s) para la petición completa. Puedes ajustarlo antes de iniciar Streamlit:
