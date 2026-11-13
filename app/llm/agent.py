@@ -141,6 +141,24 @@ def _subject_terms(text: str) -> set[str]:
     return set(_SUBJECT_RE.findall(_plain(text)))
 
 
+def _obvious_tool(question: str) -> str | None:
+    """Only rule out clearly wrong tool families; leave ambiguous cases to Llama."""
+    q = _plain(question)
+    has_policy = bool(re.search(
+        r"\b(?:devoluc\w*|reembols\w*|reglament\w*|procedimiento|"
+        r"garantia|tarjeta original|ticket de compra)\b", q
+    ))
+    has_data = bool(re.search(
+        r"\b(?:ventas? (?:netas|totales|por)|vendio|vendimos|cuanto vend|"
+        r"existencias|stock|inventario|sku-\d+|tickets? (?:abiertos|criticos|cerrados))\b", q
+    ))
+    if has_policy and not has_data:
+        return "buscar_politicas"
+    if has_data and not has_policy:
+        return "consultar_datos_tienda"
+    return None
+
+
 def _tool_query(call: dict, original: str) -> tuple[str, str | None]:
     """Parse only the declared argument key; reject unknown/malformed arguments.
 
@@ -276,6 +294,11 @@ class ToolAgent:
         fn = self.tools.get(name)
         if fn is None:
             record["status"] = "herramienta_desconocida"
+            return None, record
+        expected = _obvious_tool(question)
+        if expected and expected != name:
+            record["status"] = "herramienta_no_pertinente"
+            record["warning"] = f"Se esperaba {expected} para esta consulta"
             return None, record
         query, warning = _tool_query(call, question)
         if warning:
