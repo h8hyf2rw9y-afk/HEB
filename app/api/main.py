@@ -205,7 +205,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         from app.tools.analytics import plain as _plain_data
         import re as _re
         requested_months = set(_re.findall(
-            r"\\b(?:junio|julio|agosto)\\b", _plain_data(memory_question)
+            r"\b(?:junio|julio|agosto)\b", _plain_data(memory_question)
         ))
         for record in reversed(response.metrics.tool_calls):
             candidate = record.get("query", "")
@@ -214,12 +214,12 @@ def chat(request: ChatRequest) -> ChatResponse:
                     or not isinstance(candidate, str)):
                 continue
             q = _plain_data(candidate)
-            if not _re.search(r"\\b(?:tienda|sucursal)\\b", q):
+            if not _re.search(r"\b(?:tienda|sucursal)\b", q):
                 continue
-            if not _re.search(r"\\b(?:vendio|mas|mayor)\\b", q):
+            if not _re.search(r"\b(?:vendio|mas|mayor)\b", q):
                 continue
             if requested_months and not requested_months <= set(_re.findall(
-                    r"\\b(?:junio|julio|agosto)\\b", q)):
+                    r"\b(?:junio|julio|agosto)\b", q)):
                 continue
             # A verified CSV result, not the model's answer, authorizes
             # using this query to ground later pronoun references.
