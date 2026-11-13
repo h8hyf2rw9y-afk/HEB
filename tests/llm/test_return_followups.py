@@ -163,3 +163,32 @@ def test_real_pdfs_without_ticket_cannot_resolve_as_it_ticket(monkeypatch, tmp_p
                    for item in data["evidence"])
     finally:
         reset_retriever()
+
+
+def test_original_card_without_payment_card_uses_section_6_1_real_pdfs(monkeypatch, tmp_path):
+    """Regression: no original bank card != no purchase receipt."""
+    from pathlib import Path
+    from app.rag.config import RagSettings
+    from app.rag.extraction import discover_pdfs
+    from app.rag.index import PolicyIndex
+    from app.rag.service import reset_retriever
+
+    question = "¿Cómo se hace la devolución si el cliente pagó con tarjeta y no trae la tarjeta original?"
+    assert route_returns(question) is None
+    pdfs = discover_pdfs(Path(__file__).resolve().parents[2] / "candidatos" / "politicas")
+    if len(pdfs) != 4:
+        pytest.skip("The four exercise PDFs are not present")
+    index_path = tmp_path / "index"
+    PolicyIndex.build(pdfs, RagSettings(embeddings="off")).save(index_path)
+    monkeypatch.setenv("HEB_RAG_INDEX_DIR", str(index_path))
+    monkeypatch.setenv("HEB_RAG_EMBEDDINGS", "off")
+    reset_retriever()
+    try:
+        data = client.post("/chat", json={"question": question}).json()
+        assert data["status"] == "answered", data
+        assert "procedimiento_devoluciones.pdf" in data["answer"]
+        assert "6.1" in data["answer"]
+        assert "vale de tienda" in data["answer"]
+        assert "Mesa de Servicio" not in data["answer"]
+    finally:
+        reset_retriever()
