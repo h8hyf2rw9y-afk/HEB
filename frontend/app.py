@@ -13,7 +13,9 @@ import httpx
 import streamlit as st
 
 DEFAULT_API_URL = "http://127.0.0.1:8000"
-REQUEST_TIMEOUT_SECONDS = 30.0
+# A tool-calling agent may make several sequential Ollama calls; the UI
+# must not time out before the backend's 120 s/model-call budget.
+REQUEST_TIMEOUT_SECONDS = float(os.getenv("HEB_CHAT_TIMEOUT_S", "540"))
 
 
 def api_url() -> str:
@@ -263,6 +265,12 @@ def main() -> None:
                     "evidence": result.get("evidence", []),
                     "metrics": result.get("metrics", {}),
                 })
+            except httpx.ReadTimeout:
+                message = ("La consulta tardó más que el tiempo de espera configurado. "
+                           "FastAPI podría seguir procesándola. Revisa la terminal del backend "
+                           "y aumenta HEB_CHAT_TIMEOUT_S si tu equipo necesita más tiempo.")
+                st.error(message)
+                st.session_state.messages.append({"role": "assistant", "content": message, "status": "error"})
             except (httpx.HTTPError, ValueError) as exc:
                 message = f"No se pudo completar la consulta: {type(exc).__name__}. Revisa que FastAPI esté activo."
                 st.error(message)
