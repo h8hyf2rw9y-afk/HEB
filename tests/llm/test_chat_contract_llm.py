@@ -71,6 +71,8 @@ def test_data_answer_rewritten_keeps_evidence_and_counts_tokens(monkeypatch):
 def test_policy_answer_rewritten_keeps_citations_and_conflicts(monkeypatch, policy_index):
     def behaviour(req):
         body = req["messages"][1]["content"]
+        if "<texto_verificado>" in body:  # long policy answers are summarized; the app appends the cited text
+            return ollama_reply('Para una licuadora el plazo es de 30 días naturales con ticket de compra y empaque original completo; hay una contradicción con la FAQ, que menciona 15 días, y prevalece procedimiento_devoluciones.pdf.')
         verified = body.split("<respuesta_verificada>\n", 1)[1].split("\n</respuesta_verificada>")[0]
         # Echo the verified answer minus the header: a faithful "rewrite".
         return ollama_reply(verified.replace("Respuesta según los documentos:\n", "Según los documentos: "))

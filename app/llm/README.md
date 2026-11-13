@@ -22,7 +22,7 @@ Protecciones del agente: si el modelo cambia el mes, año, tienda o SKU al pasar
 - si dice quién vendió más, debe ser el primero del ranking;
 - se rechazan conectores causales sin respaldo («debido a», «gracias a», «porque»).
 
-Las políticas conservan la reescritura estricta, con todas las citas y condiciones. Su tope de salida crece con el tamaño de la respuesta verificada, hasta 1,600 tokens, para no cortar una cita a la mitad.
+Las respuestas cortas de políticas conservan la reescritura estricta, con todas las citas y condiciones. Las largas, desde 1,200 caracteres (por ejemplo, el plazo de un producto más los pasos de atención), usan el mismo esquema que los datos: el modelo escribe un resumen de 2 a 4 oraciones (como máximo 260 tokens) y la aplicación muestra debajo el texto verificado completo con sus citas. `validate_policy_summary` rechaza cifras, fechas, citas, documentos o códigos nuevos, un ganador distinto al que indica la fuente, y la versión que no prevalece (por ejemplo, los 15 días de la FAQ) si aparece sin la que sí prevalece.
 
 **`redaccion`.** El enrutador determinista consulta y el modelo solo reescribe la respuesta verificada.
 

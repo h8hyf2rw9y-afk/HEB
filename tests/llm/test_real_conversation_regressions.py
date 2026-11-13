@@ -46,6 +46,8 @@ def qwen_like(req: dict) -> dict:
         line = next(line for line in verified.splitlines() if "$" in line or "SKU" in line)
         text = re.sub(r"^\s*(?:\d+\.|-)\s*", "", line).rstrip(".")
         return ollama_reply(f"Según los datos verificados: {text}.", prompt_tokens=380, completion_tokens=40)
+    if "<texto_verificado>" in body:  # long policy answer: short summary, cited text shown below
+        return ollama_reply('Para una licuadora el plazo es de 30 días naturales con ticket de compra y empaque original completo; hay una contradicción con la FAQ, que menciona 15 días, y prevalece procedimiento_devoluciones.pdf.', prompt_tokens=900, completion_tokens=60)
     verified = body.split("<respuesta_verificada>\n", 1)[1].split("\n</respuesta_verificada>")[0]
     return ollama_reply(verified.replace("Respuesta según los documentos:\n", ""), prompt_tokens=700, completion_tokens=150)
 
@@ -245,3 +247,55 @@ def test_sales_drivers_figures_reconcile_with_pure_python():
     assert f"${sales['T01']:,.2f} MXN" in answer and f"${avg_sales:,.2f} MXN" in answer
     assert f"{units['T01']:,.0f} unidades" in answer and f"{avg_units:,.0f} en las otras" in answer
     assert f"Abarrotes: ${cat[('Abarrotes', 'T01')]:,.2f} MXN frente a ${avg_abarrotes:,.2f} MXN" in answer
+
+
+# --- The blender: long policy answer summarized, cited text shown below -------------------
+
+from app.llm.validation import validate_policy_summary  # noqa: E402
+
+LICUADORA_CONFLICT = [{
+    "topic": "días", "resolution": "resolved_by_source", "preferred_document": "procedimiento_devoluciones.pdf",
+    "claims": [{"document": "faq_gerentes_de_tienda.pdf", "page": 4, "values": ["15 días"]},
+               {"document": "procedimiento_devoluciones.pdf", "page": 2, "values": ["30 días"]}],
+}]
+LICUADORA_TEXT = ("- Plazo para devolución o cambio: 30 días naturales | Requisitos: Ticket de compra, empaque original. "
+                  "[procedimiento_devoluciones.pdf, p. 2, sección: 3. Plazos]\n"
+                  "- El cliente tiene 15 días con ticket. [faq_gerentes_de_tienda.pdf, p. 4, sección: P15] "
+                  "Prevalece procedimiento_devoluciones.pdf.")
+
+
+def _policy_check(summary):
+    return validate_policy_summary(question="¿Cuál es el procedimiento para devolver una licuadora?",
+                                   verified=LICUADORA_TEXT, summary=summary, conflicts=LICUADORA_CONFLICT,
+                                   allowed_sources={"procedimiento_devoluciones.pdf", "faq_gerentes_de_tienda.pdf"})
+
+
+@pytest.mark.parametrize("summary", [
+    "El cliente puede devolver la licuadora dentro de 30 días naturales con ticket de compra y empaque original.",
+    "El plazo es de 30 días naturales; la FAQ menciona 15 días, pero prevalece procedimiento_devoluciones.pdf.",
+])
+def test_policy_summary_accepted(summary):
+    assert _policy_check(summary).ok, _policy_check(summary).failures
+
+
+@pytest.mark.parametrize("summary,reason", [
+    ("El cliente tiene 15 días para devolver la licuadora.", "no prevalece"),
+    ("El plazo es de 15 días; prevalece faq_gerentes_de_tienda.pdf.", "contra la fuente"),
+    ("El plazo es de 45 días naturales.", "cifras o fechas nuevas"),
+    ("Ver [procedimiento_devoluciones.pdf, p. 9, sección: 12. Garantías].", "citas inexistentes"),
+    ("Según manual_garantias.pdf el plazo es de 30 días naturales.", "fuentes inexistentes"),
+])
+def test_policy_summary_rejected(summary, reason):
+    check = _policy_check(summary)
+    assert not check.ok and any(reason in f for f in check.failures), check.failures
+
+
+def test_blender_answer_is_a_short_model_summary_plus_the_cited_text(monkeypatch, policy_index):
+    fake = _install(monkeypatch, qwen_like)
+    data = client.post("/chat", json={"question": SEVEN[5]}).json()
+    m, sent = data["metrics"], fake.requests[-1]
+    assert m["generated"] is True and m["llm_calls"] == 1 and m["fallback_reason"] is None
+    assert "<texto_verificado>" in sent["messages"][1]["content"] and sent["options"]["num_predict"] <= 260
+    summary, _, cited = data["answer"].partition("**Texto verificado de las políticas:**")
+    assert "30 días naturales" in summary and cited  # every citation and condition stays below
+    assert "[procedimiento_devoluciones.pdf, p. 2" in cited and "7. Flujo de atención en tienda" in cited
