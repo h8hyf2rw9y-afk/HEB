@@ -13,6 +13,7 @@ from app.api.assistant_chat import classify_assistant_question, assistant_answer
 from app.api.business_intents import route_business_question
 from app.api.return_intents import route_returns, check_return_evidence
 from app.api.session_memory import SESSIONS
+from app.api.followup import resolve_data_followup
 from app.llm import AgentOutcome, GroundedWriter, LLMSettings, ToolAgent, ToolResult
 from app.llm.general import generate_general_answer
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
@@ -90,6 +91,7 @@ class Metrics(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     # Agent mode: verified tools the model chose to run, with the query actually executed.
     tool_calls: list[dict] = Field(default_factory=list)
+    resolved_question: str | None = None  # grounded continuation query, never a cached answer
 
 
 class ChatResponse(BaseModel):
@@ -183,8 +185,22 @@ def chat(request: ChatRequest) -> ChatResponse:
             "history": saved,
             "previous_question": request.previous_question or saved[-1],
         })
-    response = _chat_once(request)
-    SESSIONS.add(request.conversation_id, request.question.strip())
+    # Resolve only narrowly-defined elliptical analytics against the latest
+    # verified CSV result. Never treat old answers as fresh facts.
+    latest = SESSIONS.latest_verified(request.conversation_id)
+    resolved = resolve_data_followup(request.question, latest)
+    effective_request = request.model_copy(update={"question": resolved}) if resolved else request
+    response = _chat_once(effective_request)
+    if resolved:
+        response.metrics.resolved_question = resolved
+    SESSIONS.add(
+        request.conversation_id,
+        effective_request.question.strip(),
+        answer=response.answer,
+        evidence=response.evidence,
+        kind=response.metrics.answer_mode,
+        status=response.status,
+    )
     return response
 
 
