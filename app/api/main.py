@@ -12,6 +12,7 @@ from app.data.catalog import build_catalog
 from app.api.assistant_chat import classify_assistant_question, assistant_answer, is_general_conversation
 from app.api.business_intents import route_business_question
 from app.api.return_intents import route_returns, check_return_evidence
+from app.api.session_memory import SESSIONS
 from app.llm import AgentOutcome, GroundedWriter, LLMSettings, ToolAgent, ToolResult
 from app.llm.general import generate_general_answer
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
@@ -50,7 +51,7 @@ AGENT = ToolAgent(LLM_SETTINGS, AGENT_TOOLS)
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
-    conversation_id: str | None = None
+    conversation_id: str | None = Field(default=None, max_length=128)
     previous_question: str | None = Field(default=None, max_length=4000)
     history: list[str] = Field(default_factory=list, max_length=6)
 
@@ -84,6 +85,16 @@ class ChatResponse(BaseModel):
     conflicts: list[dict] = Field(default_factory=list)
     metrics: Metrics = Field(default_factory=Metrics)
     status: Literal["answered", "needs_clarification", "insufficient_data", "error"]
+
+
+class ResetConversationRequest(BaseModel):
+    conversation_id: str = Field(min_length=1, max_length=128)
+
+
+@app.post("/chat/reset")
+def reset_conversation(request: ResetConversationRequest) -> dict[str, bool]:
+    SESSIONS.clear(request.conversation_id)
+    return {"cleared": True}
 
 
 class AggregateRequest(BaseModel):
@@ -149,6 +160,20 @@ def _agent_metrics(out: AgentOutcome, start: float) -> Metrics:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
+    # Client-provided history has priority. Otherwise a bounded, volatile
+    # conversation_id session lets a direct API client continue a dialogue.
+    saved = SESSIONS.history(request.conversation_id)
+    if not request.history and saved:
+        request = request.model_copy(update={
+            "history": saved,
+            "previous_question": request.previous_question or saved[-1],
+        })
+    response = _chat_once(request)
+    SESSIONS.add(request.conversation_id, request.question.strip())
+    return response
+
+
+def _chat_once(request: ChatRequest) -> ChatResponse:
     start = time.perf_counter()
     question = request.question.strip()
     if _agent_applies(question):
