@@ -291,16 +291,28 @@ def _deterministic_chat(request: ChatRequest, start: float, writer: GroundedWrit
         response = generate_general_answer(
             question, LLM_SETTINGS, default_answer=default_answer,
         )
+        # Meta answers must describe the actual H-E-B assistant, not a
+        # generic model that offers recipes and unrelated services.
+        answer = response.answer
+        generated = response.generated
+        fallback = response.fallback_reason
+        if generated and assistant_intent in {"capabilities", "identity"}:
+            from app.api.assistant_chat import _plain as _normalize_meta
+            lowered = _normalize_meta(answer)
+            if not any(term in lowered for term in ("h-e-b", "heb", "duckdb", "rag", "ventas", "inventario", "politic", "tiendas", "asistente local")):
+                answer = default_answer
+                generated = False
+                fallback = "respuesta_meta_fuera_de_alcance"
         return ChatResponse(
-            answer=response.answer, status="answered",
+            answer=answer, status="answered",
             metrics=Metrics(
-                answer_mode="general_unverified" if response.generated else "assistant_info",
+                answer_mode="general_unverified" if generated else "assistant_info",
                 input_tokens=response.input_tokens, output_tokens=response.output_tokens,
                 total_tokens=response.input_tokens + response.output_tokens,
                 llm_calls=response.llm_calls,
                 llm_model=response.model if response.llm_calls else None,
                 generation_latency_ms=response.latency_ms,
-                generated=response.generated, fallback_reason=response.fallback_reason,
+                generated=generated, fallback_reason=fallback,
                 latency_ms=round((time.perf_counter() - start) * 1000, 2),
             ),
         )
