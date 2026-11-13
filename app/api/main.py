@@ -144,11 +144,13 @@ def health_llm() -> dict:
 
 
 def _agent_applies(question: str) -> bool:
-    """Business questions go to the model first when agent mode is on. Live Ollama
-    diagnostics, greetings and off-topic chat keep their own exact/explicit paths."""
+    """LLM selects tools for real analysis. Exact catalogue/meta questions are
+    answered by their existing trusted routes instead of speculative tool calls."""
     return (AGENT.settings.enabled and AGENT.settings.mode == "agente" and bool(question)
             and len(question) <= 1000
-            and not classify_assistant_question(question) and not is_general_conversation(question))
+            and not classify_assistant_question(question)
+            and not is_general_conversation(question)
+            and route_business_question(question) is None)
 
 
 def _agent_metrics(out: AgentOutcome, start: float) -> Metrics:
