@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from .config import LLMSettings
 from .ollama_client import ChatResult, LLMError, OllamaChatClient
 from .prompts import build_messages
-from .validation import has_injection, validate_rewrite
+from .validation import has_injection, compose_grounded_answer
 
 logger = logging.getLogger(__name__)
 
@@ -63,15 +63,6 @@ class GroundedWriter:
         if status not in REWRITABLE_STATUSES:
             fallback.fallback_reason = f"estado_{status}_no_se_redacta"
             return fallback
-        # Short, complete deterministic answers have no useful prose to improve.
-        # Avoid spending seconds of CPU on trivial results such as "Total: 0 tickets."
-        if (
-            kind == "datos" and not conflicts
-            and len(verified_answer.split()) <= 8
-            and len(verified_answer.splitlines()) <= 2
-        ):
-            fallback.fallback_reason = "redaccion_innecesaria"
-            return fallback
         if has_injection(verified_answer):
             # Suspicious instructions inside the evidence: do not expose them to the model.
             fallback.fallback_reason = "evidencia_con_instrucciones_sospechosas"
@@ -114,7 +105,7 @@ class GroundedWriter:
             generation_latency_ms=result.latency_ms,
         )
         sources = {e.get("source", "") for e in evidence if isinstance(e, dict)}
-        check = validate_rewrite(
+        composed = compose_grounded_answer(
             kind=kind,
             question=question,
             verified=verified_answer,
@@ -122,11 +113,14 @@ class GroundedWriter:
             allowed_sources=sources,
             conflicts=conflicts,
         )
-        if not check.ok:
+        if not composed.ok:
             outcome.fallback_reason = "validacion_fallida"
-            outcome.warnings.append("Respuesta determinista; la redacción del modelo no pasó la validación: " + check.reason)
-            logger.info("LLM rewrite rejected: %s", check.reason)
+            reason = "; ".join(composed.failures)
+            outcome.warnings.append("Respuesta determinista; la redacción del modelo no pasó la validación: " + reason)
+            logger.info("LLM rewrite rejected: %s", reason)
             return outcome
-        outcome.answer = result.content
+        outcome.answer = composed.answer
         outcome.generated = True
+        if composed.evidence_appended:
+            outcome.warnings.append("El modelo redactó el resumen; se adjuntaron todas las cifras verificadas para no omitir resultados.")
         return outcome
