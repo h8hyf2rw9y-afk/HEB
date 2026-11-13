@@ -165,6 +165,24 @@ def _compare_two_store_products(question: str, data_dir: Path) -> AnalyticalAnsw
         lines.extend(f"- {product}: {_money(amount)}" for product, amount in ranked)
         if not ranked:
             lines.append("- No hay ventas de productos registradas para el periodo.")
+    by_store = {
+        name: {product: float(amount) for tienda, product, amount in results if tienda == name}
+        for name in (matched[0]["nombre"], matched[1]["nombre"])
+    }
+    first, second = matched[0]["nombre"], matched[1]["nombre"]
+    products_all = set(by_store[first]) | set(by_store[second])
+    differences = sorted(
+        products_all,
+        key=lambda product: (-abs(by_store[first].get(product, 0.0) -
+                                  by_store[second].get(product, 0.0)), product),
+    )[:5]
+    if differences:
+        lines.append(f"Mayores diferencias por producto ({first} menos {second}):")
+        for product in differences:
+            a = by_store[first].get(product, 0.0)
+            b = by_store[second].get(product, 0.0)
+            lines.append(f"- {product}: {_money(a)} frente a {_money(b)}; "
+                         f"diferencia {_money(a - b)}.")
     return AnalyticalAnswer(
         f"Comparación de productos por ventas netas ({period}; máximo 5 por tienda):\n"
         + "\n".join(lines)
