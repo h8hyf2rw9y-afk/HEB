@@ -18,8 +18,8 @@ def plain(text: str) -> str:
 _RECEIPT = re.compile(r"\b(?:sin (?:el )?ticket|no (?:tiene|trae|presenta|encuentra|conserva) (?:el )?ticket|sin (?:el )?comprobante|sin (?:su )?recibo|ticket de compra)\b")
 _RETURN = re.compile(r"\b(?:devoluc\w*|devolver|devuelve|reembols\w*|cambio de producto|devolviendo)\b")
 _EXCHANGE_VS_REFUND = re.compile(
-    r"\b(?:cambiar|cambio)\b.{0,100}\b(?:reembols\w*|devoluc\w*)\b"
-    r"|\b(?:reembols\w*|devoluc\w*)\b.{0,100}\b(?:cambiar|cambio)\b"
+    r"\b(?:cambiar|cambio)\b.{0,100}\b(?:(?:reembols\w*|rembols\w*)|devoluc\w*)\b"
+    r"|\b(?:(?:reembols\w*|rembols\w*)|devoluc\w*)\b.{0,100}\b(?:cambiar|cambio)\b"
 )
 
 _ORIGINAL_CARD = re.compile(
