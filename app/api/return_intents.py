@@ -35,8 +35,35 @@ _SHORT_FOLLOWUP = re.compile(r"^(?:y |pero |entonces |en caso de que |si )")
 
 @dataclass(frozen=True)
 class ReturnRoute:
-    kind: str  # no_receipt | general_process | needs_context
+    kind: str  # no_receipt | general_process | needs_context | exchange_vs_refund
     query: str = ""
+    product: str | None = None  # product the user already named ("licuadora")
+
+
+_GENERIC_ITEMS = {"producto", "productos", "articulo", "articulos", "mercancia", "compra", "compras",
+                  "algo", "cosa", "cosas", "pedido", "pedidos"}
+_STOP = {"que", "cual", "cuales", "como", "con", "sin", "si", "en", "por", "para", "cuando", "y", "o", "pero",
+         "el", "la", "los", "las", "un", "una", "de", "del", "al", "a", "es", "se", "le", "lo", "porque"}
+_PRODUCT = re.compile(
+    r"\b(?:devolver|devuelve|regresar|cambiar|devolucion(?:es)? de|cambio de)\s+"
+    r"(?:(?:un|una|unos|unas|el|la|los|las|su|sus)\s+)?([a-z0-9][a-z0-9 ]*)"
+)
+
+
+def named_product(question: str) -> str | None:
+    """Product the user already named («licuadora», «plancha de vapor»), so it is
+    never asked for again. Generic words («un producto») do not count."""
+    match = _PRODUCT.search(plain(question).strip(" ¿?¡!.,;:"))
+    if not match:
+        return None
+    words = []
+    for word in match.group(1).split():
+        if word in _STOP or len(words) == 3:
+            break
+        words.append(word)
+    if not words or words[0] in _GENERIC_ITEMS:
+        return None
+    return " ".join(words)
 
 
 def route_returns(question: str, previous_question: str | None = None) -> ReturnRoute | None:
@@ -69,14 +96,11 @@ def route_returns(question: str, previous_question: str | None = None) -> Return
         return ReturnRoute("no_receipt", "¿Puedo aceptar una devolución sin ticket?")
 
     if has_return and _GENERIC_PROCEDURE.search(q):
-        # The generic rules come from the governing procedure, not FAQ P15
-        # concerning only small appliances. Never assert a category deadline
-        # until the product category is known.
-        return ReturnRoute(
-            "general_process",
-            "¿Cuál es el procedimiento general de devolución de productos, "
-            "requisitos y plazos según procedimiento_devoluciones.pdf?"
-        )
+        # Steps come from the governing procedure (section 7). Deadlines and
+        # requirements depend on the product category, so they are retrieved
+        # only when the user named the product; otherwise only that is asked.
+        product = named_product(question)
+        return ReturnRoute("general_process", question.strip() if product else "", product)
     return None
 
 
@@ -104,10 +128,14 @@ def check_return_evidence(kind: str, *, status: str, answer: str, evidence: list
             and "manual_apertura_y_cierre_tienda.pdf" not in answer
         )
     if kind == "general_process":
+        # The FAQ may appear only as the losing side of a contradiction the
+        # procedure itself resolves; it can never be the governing rule.
+        faq_ok = ("faq_gerentes_de_tienda.pdf" not in answer
+                  or "prevalece procedimiento_devoluciones.pdf" in text)
         return (
             "procedimiento_devoluciones.pdf" in sources
             and "[procedimiento_devoluciones.pdf," in answer
-            and "faq_gerentes_de_tienda.pdf" not in answer
+            and faq_ok
             and bool(re.search(r"\b(?:devoluc\w*|devolver|cambio)\b", text))
         )
     return False

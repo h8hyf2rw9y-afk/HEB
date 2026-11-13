@@ -7,7 +7,7 @@ import pytest
 from llm_fakes import make_writer, ollama_reply  # first: also puts the repo root on sys.path
 
 from app.llm.ollama_client import LLMBadResponse, LLMEmptyResponse, LLMTimeout, LLMUnavailable, OllamaChatClient
-from app.llm.prompts import SYSTEM_PROMPT, build_messages
+from app.llm.prompts import SUMMARY_SYSTEM_PROMPT, SYSTEM_PROMPT, build_messages
 
 
 @pytest.fixture
@@ -52,8 +52,9 @@ def test_normal_reply_is_used_with_real_counters(writer_factory):
     sent = fake.requests[0]
     assert sent["model"] == "llama3.2" and sent["stream"] is False
     assert sent["options"]["temperature"] == 0.0
-    assert sent["messages"][0]["content"] == SYSTEM_PROMPT
-    assert A1_VERIFIED in sent["messages"][1]["content"]
+    # Data answers use the compact summary prompt with a capped output length.
+    assert sent["messages"][0]["content"] == SUMMARY_SYSTEM_PROMPT
+    assert A1_VERIFIED in sent["messages"][1]["content"] and sent["options"]["num_predict"] <= 220
 
 
 def test_policy_reply_keeps_citation(writer_factory):
@@ -122,14 +123,14 @@ def test_altered_duckdb_figure_is_rejected(writer_factory):
     out = _rewrite(writer)
     assert out.answer == A1_VERIFIED and out.fallback_reason == "validacion_fallida"
     assert out.llm_calls == 1 and out.total_tokens == 505  # the call still happened and is billed
-    assert "alteradas" in " ".join(out.warnings) or "omitidas" in " ".join(out.warnings)
+    assert "n:2163062" in " ".join(out.warnings)  # the altered figure is reported as new
 
 
 def test_swapped_store_figures_are_rejected(writer_factory):
     swapped = A1_GOOD.replace("$2,163,062.36", "@").replace("$1,973,086.37", "$2,163,062.36").replace("@", "$1,973,086.37")
     writer, _ = writer_factory(ollama_reply(swapped))
     out = _rewrite(writer)
-    assert not out.generated and "reasignadas" in " ".join(out.warnings)
+    assert not out.generated and "atribuida a «Tienda Valle Norte»" in " ".join(out.warnings)
 
 
 def test_invented_figure_is_rejected(writer_factory):
@@ -366,14 +367,12 @@ def test_inventory_rewrite_with_all_skus_and_quantities_is_accepted(writer_facto
 @pytest.mark.parametrize("bad", [
     # quantities swapped between SKU-1013 and SKU-1036
     A2_GOOD.replace("existencia 72, punto de reorden 260", "@").replace("existencia 59, punto de reorden 158", "existencia 72, punto de reorden 260").replace("@", "existencia 59, punto de reorden 158"),
-    # one SKU dropped
-    A2_GOOD.replace(" y SKU-1036 Limón kg (existencia 59, punto de reorden 158)", ""),
     # SKU renamed
     A2_GOOD.replace("SKU-1017", "SKU-1071"),
     # snapshot date changed
     A2_GOOD.replace("1 de septiembre de 2026", "1 de agosto de 2026"),
 ])
-def test_inventory_rows_swapped_dropped_or_renamed_are_rejected(writer_factory, bad):
+def test_inventory_rows_swapped_or_renamed_are_rejected(writer_factory, bad):
     writer, _ = writer_factory(ollama_reply(bad))
     out = _rewrite(writer, verified=A2_VERIFIED, evidence=A2_EVIDENCE,
                    question="¿Qué productos de la tienda T01 están por debajo del punto de reorden?")
@@ -398,3 +397,14 @@ def test_multirow_prompt_explicitly_requires_all_rows():
     )
     assert "reproduce TODAS las tiendas o SKU" in messages[1]["content"]
     assert "NO RESUMAS" in messages[0]["content"]
+
+
+def test_inventory_summary_that_omits_a_row_keeps_the_full_verified_table(writer_factory):
+    """A summary may skip rows; the application then shows every verified row below it."""
+    partial = A2_GOOD.replace(" y SKU-1036 Limón kg (existencia 59, punto de reorden 158)", "")
+    writer, _ = writer_factory(ollama_reply(partial))
+    out = _rewrite(writer, verified=A2_VERIFIED, evidence=A2_EVIDENCE,
+                   question="¿Qué productos de la tienda T01 están por debajo del punto de reorden?")
+    assert out.generated and out.answer.startswith(partial)
+    assert A2_VERIFIED in out.answer  # SKU-1036 and its quantities are still shown, unaltered
+

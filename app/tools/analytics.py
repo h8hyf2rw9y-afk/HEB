@@ -193,6 +193,117 @@ def _compare_two_store_products(question: str, data_dir: Path) -> AnalyticalAnsw
         "sales_comparison",
     )
 
+_WHY_LEAD = re.compile(r"\b(?:por que|a que se debe|que explica|como se explica)\b")
+_LEAD_WORDS = re.compile(r"\b(?:mas|mayor|mejor|supero|lider|primer lugar|ventaja)\b")
+
+
+def _signed_money(value: float) -> str:
+    return ("-" if value < 0 else "") + _money(abs(value))
+
+
+def _store_sales_drivers(question: str, data_dir: Path) -> AnalyticalAnswer | None:
+    """«¿Por qué <tienda> vendió más que las otras en <mes>?» answered with what the
+    CSVs can actually show: where the store's lead over the average of the other
+    stores sits (volume vs. price per unit, product categories, channels).
+
+    Parameterized SQL only. It describes observed differences and says plainly
+    that the files do not record causes (promotions, location, traffic, marketing)."""
+    q = plain(question)
+    if not (_WHY_LEAD.search(q) and _LEAD_WORDS.search(q)):
+        return None
+    stores_path, sales_path, products_path = (data_dir / "tiendas.csv", data_dir / "ventas.csv",
+                                              data_dir / "catalogo_productos.csv")
+    store_id, store_name = _requested_store(question, stores_path)
+    if not store_id or store_id in ("ambiguous", "unknown"):
+        return None
+    if not all(p.is_file() for p in (stores_path, sales_path, products_path)):
+        return _missing(question, "Faltan los CSV de ventas, tiendas o productos.")
+    start, end, period = _period(question)
+    if period == "multiple":
+        return _missing(question, "Especifica un solo mes para este análisis.")
+    import duckdb
+
+    base = """
+        WITH v AS (SELECT * FROM read_csv_auto(?) WHERE fecha >= CAST(? AS DATE) AND fecha < CAST(? AS DATE))
+    """
+    with duckdb.connect() as con:
+        totals = con.execute(base + """
+            SELECT t.tienda_id, t.nombre, SUM(v.venta_neta_mxn), SUM(v.unidades)
+            FROM v JOIN read_csv_auto(?) t ON t.tienda_id = v.tienda_id
+            GROUP BY t.tienda_id, t.nombre ORDER BY 3 DESC, t.nombre
+        """, [str(sales_path), start, end, str(stores_path)]).fetchall()
+        by_category = con.execute(base + """
+            SELECT p.categoria, v.tienda_id, SUM(v.venta_neta_mxn)
+            FROM v JOIN read_csv_auto(?) p ON p.sku = v.sku
+            GROUP BY p.categoria, v.tienda_id
+        """, [str(sales_path), start, end, str(products_path)]).fetchall()
+        by_channel = con.execute(base + """
+            SELECT v.canal, v.tienda_id, SUM(v.venta_neta_mxn) FROM v GROUP BY v.canal, v.tienda_id
+        """, [str(sales_path), start, end]).fetchall()
+    if len(totals) < 2 or store_id not in {row[0] for row in totals}:
+        return _missing(question, "No hay ventas suficientes de esa tienda en el periodo para compararla.")
+    others = [row for row in totals if row[0] != store_id]
+    rank = next(i for i, row in enumerate(totals, 1) if row[0] == store_id)
+    sales = {row[0]: float(row[2]) for row in totals}
+    units = {row[0]: float(row[3]) for row in totals}
+    other_avg_sales = sum(sales[row[0]] for row in others) / len(others)
+    other_avg_units = sum(units[row[0]] for row in others) / len(others)
+    gap = sales[store_id] - other_avg_sales
+    per_unit = sales[store_id] / units[store_id] if units[store_id] else 0.0
+    other_per_unit = other_avg_sales / other_avg_units if other_avg_units else 0.0
+
+    def gaps(rows) -> list[tuple[str, float, float, float]]:
+        table: dict[str, dict[str, float]] = {}
+        for key, tid, amount in rows:
+            table.setdefault(key, {})[tid] = float(amount)
+        out = []
+        for key, per_store in table.items():
+            mine = per_store.get(store_id, 0.0)
+            avg = sum(per_store.get(row[0], 0.0) for row in others) / len(others)
+            out.append((key, mine, avg, mine - avg))
+        return sorted(out, key=lambda item: (-item[3], item[0]))
+
+    category_gaps, channel_gaps = gaps(by_category), gaps(by_channel)
+    lines = [f"Análisis de ventas netas de {store_name} frente al promedio de las otras {len(others)} tiendas ({period}).",
+             "", "Lo que muestran los datos:"]
+    if rank == 1:
+        lines.append(f"- {store_name} fue la tienda con más ventas: {_money(sales[store_id])}, "
+                     f"{_money(gap)} por encima del promedio de las otras ({_money(other_avg_sales)}).")
+    else:
+        lines.append(f"- En {period}, {store_name} no fue la tienda con más ventas: quedó en el lugar {rank} "
+                     f"con {_money(sales[store_id])}; la primera fue {totals[0][1]} con {_money(float(totals[0][2]))}.")
+    lines.append(f"- Volumen: vendió {units[store_id]:,.0f} unidades frente a un promedio de "
+                 f"{other_avg_units:,.0f} en las otras tiendas.")
+    lines.append(f"- Venta promedio por unidad: {_money(per_unit)} frente a {_money(other_per_unit)} en las otras tiendas.")
+    top_categories = [c for c in category_gaps if c[3] > 0][:3]
+    if top_categories:
+        lines.append("- Categorías con mayor ventaja sobre el promedio de las otras tiendas:")
+        lines.extend(f"  - {name}: {_money(mine)} frente a {_money(avg)} (diferencia {_signed_money(diff)})"
+                     for name, mine, avg, diff in top_categories)
+    lines.append("- Ventas por canal frente al promedio de las otras tiendas:")
+    lines.extend(f"  - {name}: {_money(mine)} frente a {_money(avg)} (diferencia {_signed_money(diff)})"
+                 for name, mine, avg, diff in channel_gaps)
+    if rank == 1 and gap > 0 and top_categories:
+        share = sum(c[3] for c in top_categories) / gap
+        volume_driven = units[store_id] > other_avg_units and abs(per_unit - other_per_unit) <= 0.05 * other_per_unit
+        lines += ["", "Lectura de los datos:",
+                  f"- Las {len(top_categories)} categorías anteriores concentran el {share * 100:.1f}% de la ventaja "
+                  "sobre el promedio de las otras tiendas."]
+        lines.append("- La ventaja viene sobre todo de vender más unidades, con una venta por unidad similar."
+                     if volume_driven else
+                     "- La ventaja combina diferencias de volumen y de venta promedio por unidad.")
+    lines += ["", "Lo que los datos no permiten afirmar:",
+              "- Los CSV registran ventas, unidades, descuentos, canales y productos, pero no promociones, "
+              "ubicación, tráfico de clientes ni campañas de marketing. Estas diferencias describen dónde se "
+              "concentra la venta; no demuestran sus causas."]
+    return AnalyticalAnswer(
+        "\n".join(lines), "answered",
+        [_source("ventas.csv", period), _source("tiendas.csv", "tienda_id"),
+         _source("catalogo_productos.csv", "categoria")],
+        "sales_drivers",
+    )
+
+
 def _missing(question: str, reason: str) -> AnalyticalAnswer:
     return AnalyticalAnswer(
         "No puedo obtener una cifra confiable de los CSV para esa pregunta. " + reason,
@@ -209,6 +320,9 @@ def answer_data_question(question: str, data_dir: Path = DATA_DIR) -> Analytical
     comparison = _compare_two_store_products(question, data_dir)
     if comparison is not None:
         return comparison
+    drivers = _store_sales_drivers(question, data_dir)
+    if drivers is not None:
+        return drivers
     import duckdb
 
     sales = data_dir / "ventas.csv"

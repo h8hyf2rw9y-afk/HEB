@@ -113,10 +113,12 @@ def record_llm_calls():
 
 
 class OllamaChatClient:
-    def __init__(self, base_url: str, model: str, timeout_s: float, transport: httpx.BaseTransport | None = None):
+    def __init__(self, base_url: str, model: str, timeout_s: float, transport: httpx.BaseTransport | None = None,
+                 keep_alive: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_s = timeout_s
+        self.keep_alive = keep_alive
         self._transport = transport  # injectable for tests (httpx.MockTransport)
 
     def chat(self, messages: list[dict], *, temperature: float = 0.0, seed: int = 42, num_predict: int = 700,
@@ -129,6 +131,8 @@ class OllamaChatClient:
         }
         if tools:
             payload["tools"] = tools
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
         start = time.perf_counter()
         try:
             with httpx.Client(timeout=self.timeout_s, transport=self._transport) as client:

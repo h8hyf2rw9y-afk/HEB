@@ -50,7 +50,9 @@ def test_contract_fields_with_llm_disabled(monkeypatch):
 
 def test_data_answer_rewritten_keeps_evidence_and_counts_tokens(monkeypatch):
     def behaviour(req):
-        verified = req["messages"][1]["content"].split("<respuesta_verificada>\n", 1)[1].split("\n</respuesta_verificada>")[0]
+        body = req["messages"][1]["content"]
+        tag = "resultado_verificado" if "<resultado_verificado>" in body else "respuesta_verificada"
+        verified = body.split(f"<{tag}>\n", 1)[1].split(f"\n</{tag}>")[0]
         lines = [line.split(". ", 1)[1] for line in verified.splitlines()[1:]]
         return ollama_reply("En agosto de 2026 la tienda con mayores ventas netas fue " + lines[0] + ". Le siguen " + "; ".join(lines[1:]) + ".",
                             prompt_tokens=610, completion_tokens=72)

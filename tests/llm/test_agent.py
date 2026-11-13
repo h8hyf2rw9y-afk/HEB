@@ -43,7 +43,7 @@ class Script:
 
 def _install(monkeypatch, behaviour, mode="agente") -> FakeOllama:
     fake = FakeOllama(behaviour)
-    settings = LLMSettings(enabled=True, model="llama3.2", timeout_s=2, mode=mode)
+    settings = LLMSettings(enabled=True, model="llama3.2", timeout_s=2, mode=mode, verified_first=False)
     agent = ToolAgent(settings, main.AGENT_TOOLS, OllamaChatClient(settings.base_url, settings.model, 2, transport=fake.transport))
     monkeypatch.setattr(main, "AGENT", agent)
     return fake

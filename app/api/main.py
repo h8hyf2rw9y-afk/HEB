@@ -16,11 +16,11 @@ from app.api.assistant_chat import classify_assistant_question, assistant_answer
 from app.api.business_intents import route_business_question
 from app.api.return_intents import route_returns, check_return_evidence
 from app.api.session_memory import SESSIONS
-from app.api.followup import resolve_data_followup, resolve_policy_followup
+from app.api.followup import EXPLICIT_DATA_REF, resolve_data_followup, resolve_policy_followup
 from app.llm import AgentOutcome, GroundedWriter, LLMSettings, ToolAgent, ToolResult
 from app.llm.general import generate_general_answer
 from app.llm.ollama_client import record_llm_calls
-from app.rag.interface import PolicySearchRequest, rag_health, search_policies
+from app.rag.interface import PolicySearchRequest, PolicySearchResponse, policy_section, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
 from app.tools.analytics import answer_data_question, looks_like_data
 
@@ -337,6 +337,12 @@ def _chat(request: ChatRequest) -> ChatResponse:
         )
     resolved = (resolve_data_followup(request.question, latest)
                 or resolve_policy_followup(request.question, latest))
+    if not resolved and latest is not None and latest.kind != "grounded_data" \
+            and EXPLICIT_DATA_REF.search(_plain_data(request.question)):
+        # "¿Y esa tienda en junio?" after a policy question: the explicit reference
+        # points to the last verified DATA turn, which is re-queried, not replayed.
+        resolved = resolve_data_followup(
+            request.question, SESSIONS.latest_verified_of(request.conversation_id, "grounded_data"))
     effective_request = request.model_copy(update={"question": resolved}) if resolved else request
     response = _chat_once(effective_request, verified_context=latest)
     if resolved:
@@ -391,6 +397,17 @@ def _chat_once(request: ChatRequest, verified_context=None) -> ChatResponse:
     fast = _fast_analytics(question, start)
     if fast is not None:
         return fast
+    if _agent_applies(question) and getattr(AGENT.settings, "verified_first", False):
+        # Verified-first: the backend can already classify and answer most
+        # business questions from DuckDB/RAG in milliseconds. Asking the model to
+        # pick a tool first costs a full call (tens of seconds on a laptop) and it
+        # sometimes answers without any tool. Retrieve first; the model only writes.
+        probe = _deterministic_chat(request, start, _NO_REWRITE)
+        if probe.status == "needs_clarification" and probe.metrics.answer_mode == "needs_context":
+            return probe  # a precise clarifying question beats a speculative tool call
+        if (probe.status == "answered" and probe.evidence
+                and probe.metrics.answer_mode in ("grounded_data", "grounded_policy")):
+            return _write_verified(probe, question, start)
     if _agent_applies(question):
         # A source-backed prior answer is context for the real ToolAgent only.
         # Test doubles and older implementations keep the three-argument API.
@@ -419,6 +436,64 @@ def _chat_once(request: ChatRequest, verified_context=None) -> ChatResponse:
         m.latency_ms = round((time.perf_counter() - start) * 1000, 2)
         return response
     return _deterministic_chat(request, start, None)
+
+
+_RETURN_PROCEDURE = "procedimiento_devoluciones.pdf"
+_RETURN_FLOW_SECTION = "7. Flujo de atención en tienda"
+
+
+def _return_policy(route) -> PolicySearchResponse:
+    """Evidence for a return question. For "how do I return X" the steps come from
+    the procedure's in-store flow section, and the deadline/requirements from a
+    search with the user's own words (which names the product). Only the missing
+    piece of information is asked for, never what the user already said."""
+    if route.kind != "general_process":
+        return search_policies(PolicySearchRequest(query=route.query, top_k=5))
+    flow = policy_section(_RETURN_PROCEDURE, _RETURN_FLOW_SECTION)
+    if flow.status != "answered":
+        return flow
+    steps = "Pasos de atención en tienda:\n" + flow.answer
+    if not route.product:
+        return flow.model_copy(update={"answer": steps + (
+            "\n\nEl plazo y los requisitos dependen del tipo de producto (tabla de la sección 3 del "
+            "procedimiento). ¿Qué producto quiere devolver el cliente y tiene ticket de compra?")})
+    specific = None
+    # The user's words first; a follow-up merged with the previous question can be
+    # too diffuse for retrieval, so retry with a query focused on the named product.
+    for query in (route.query, f"Plazo y requisitos para devolver {route.product}"):
+        specific = search_policies(PolicySearchRequest(query=query, top_k=5))
+        if specific.status == "answered" and any(e.document == _RETURN_PROCEDURE for e in specific.evidence):
+            break
+    if specific.status != "answered" or not any(e.document == _RETURN_PROCEDURE for e in specific.evidence):
+        return flow.model_copy(update={"answer": steps + (
+            f"\n\nNo encontré en el procedimiento un plazo específico para «{route.product}». "
+            "¿A qué tipo de producto corresponde y tiene ticket de compra?")})
+    body = specific.answer.replace("Respuesta según los documentos:\n", "", 1).strip()
+    return specific.model_copy(update={
+        "answer": f"Plazo y requisitos para {route.product}:\n{body}\n\n{steps}",
+        "evidence": list(specific.evidence) + list(flow.evidence),
+    })
+
+
+def _write_verified(probe: ChatResponse, question: str, start: float) -> ChatResponse:
+    """One model call: the agent's model writes the verified answer; validation and
+    the deterministic fallback stay exactly as in the rewrite path."""
+    kind = "datos" if probe.metrics.answer_mode == "grounded_data" else "politicas"
+    writer = GroundedWriter(AGENT.settings, AGENT.client) if isinstance(AGENT, ToolAgent) else WRITER
+    prose = writer.rewrite(question=question, kind=kind, status=probe.status,
+                           verified_answer=probe.answer, evidence=probe.evidence, conflicts=probe.conflicts)
+    m = probe.metrics
+    m.input_tokens, m.output_tokens = prose.input_tokens, prose.output_tokens
+    m.total_tokens = prose.total_tokens
+    m.llm_calls = prose.llm_calls
+    m.llm_model = prose.model if prose.llm_calls else None
+    m.generation_latency_ms = prose.generation_latency_ms
+    m.generated, m.fallback_reason = prose.generated, prose.fallback_reason
+    m.warnings = list(m.warnings) + prose.warnings
+    m.tool_calls = [{"name": "consultar_datos_tienda" if kind == "datos" else "buscar_politicas",
+                     "query": question, "status": probe.status, "planner": "verified_route"}]
+    m.latency_ms = round((time.perf_counter() - start) * 1000, 2)
+    return probe.model_copy(update={"answer": prose.answer, "metrics": m})
 
 
 def _deterministic_chat(request: ChatRequest, start: float, writer: GroundedWriter | None) -> ChatResponse:
@@ -450,7 +525,7 @@ def _deterministic_chat(request: ChatRequest, start: float, writer: GroundedWrit
                 metrics=Metrics(answer_mode="needs_context",
                                 latency_ms=round((time.perf_counter() - start) * 1000, 2)),
             )
-        result = search_policies(PolicySearchRequest(query=return_route.query, top_k=5))
+        result = _return_policy(return_route)
         evidence = [item.to_http_evidence() for item in result.evidence]
         if not check_return_evidence(return_route.kind, status=result.status,
                                      answer=result.answer, evidence=evidence):

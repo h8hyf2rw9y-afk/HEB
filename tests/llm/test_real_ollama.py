@@ -8,7 +8,7 @@ import os
 import pytest
 
 pytestmark = pytest.mark.skipif(os.getenv("HEB_LLM_REAL_TESTS") != "1",
-                                reason="requiere Ollama local con llama3.2 (HEB_LLM_REAL_TESTS=1)")
+                                reason="requiere Ollama local con el modelo configurado (HEB_LLM_REAL_TESTS=1)")
 
 
 def test_real_llama_rewrites_a_data_answer_and_passes_validation():
@@ -59,3 +59,45 @@ def test_real_llama_agent_chooses_a_tool_for_a_data_question():
     if not out.tool_calls:
         pytest.fail(f"{settings.model} no llamó a ninguna herramienta ({out.fallback_reason})")
     assert "$2,163,062.36 MXN" in out.answer
+
+
+SEVEN_REAL = [
+    ("¿Qué tienda vendió más en agosto de 2026?", ["Valle Norte", "$2,163,062.36 MXN"]),
+    ("¿Y cómo le fue en julio?", ["$2,153,571.23 MXN"]),
+    ("¿Por qué crees que vendió más que las otras?", ["Valle Norte", "no demuestran sus causas"]),
+    ("¿Cuántos productos tiene cada tienda?", ["120 SKU"]),
+    ("¿Qué es SIGMA?", ["Sistema Integral de Gestión de Mermas y Abasto"]),
+    ("¿Cuál es el procedimiento para devolver una licuadora?", ["30 días naturales", "procedimiento_devoluciones.pdf"]),
+    ("¿Y si el cliente no tiene ticket?", ["vale de tienda", "identificación oficial"]),
+]
+
+
+def test_real_model_seven_questions_one_conversation():
+    """The seven questions from the real chat, with the model configured by the
+    environment (HEB_LLM_MODEL, e.g. qwen3:4b-instruct). Prints per-turn calls,
+    tokens and stage timings; fails on a missing verified figure or source.
+    Simulated tests cannot prove this: run it on the laptop."""
+    from uuid import uuid4
+
+    from fastapi.testclient import TestClient
+
+    from app.api import main
+    from app.llm import GroundedWriter, LLMSettings, ToolAgent
+
+    base = LLMSettings.from_env()
+    settings = LLMSettings(enabled=True, base_url=base.base_url, model=base.model,
+                           timeout_s=max(base.timeout_s, 180), mode="agente", keep_alive=base.keep_alive)
+    main.AGENT = ToolAgent(settings, main.AGENT_TOOLS)
+    main.WRITER = GroundedWriter(settings)
+    client, sid, problems = TestClient(main.app), uuid4().hex, []
+    for question, must in SEVEN_REAL:
+        data = client.post("/chat", json={"question": question, "conversation_id": sid}).json()
+        m, t = data["metrics"], data["metrics"].get("timings", {})
+        print(f"\n== {question}\n   estado={data['status']} generada={m['generated']} fallback={m['fallback_reason']} "
+              f"llamadas={m['llm_calls']} tokens={m['input_tokens']}+{m['output_tokens']} total={m['latency_ms'] / 1000:.1f}s "
+              f"prompt={t.get('llm_prompt_eval_ms', 0) / 1000:.1f}s generación={t.get('llm_generation_ms', 0) / 1000:.1f}s "
+              f"tokens/s={t.get('tokens_per_s')}\n   resuelta={m.get('resolved_question')}\n   {data['answer'][:400]}")
+        missing = [text for text in must if text not in data["answer"]]
+        if data["status"] != "answered" or missing:
+            problems.append((question, data["status"], missing))
+    assert not problems, problems
