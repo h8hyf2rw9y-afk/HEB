@@ -33,7 +33,10 @@ def _top_store(previous: VerifiedTurn, data_dir: Path) -> str | None:
     """Use the first ranked result from an actual sales CSV answer."""
     if not re.search(r"\b(?:tienda|sucursal)\b", _plain(previous.question)):
         return None
-    if not re.search(r"(?m)^\s*1\.\s+", previous.answer):
+    # A re-computed total for a single explicitly named store remains a
+    # valid anchor for the next drill-down, even if no ranking is printed.
+    has_rank = bool(re.search(r"(?m)^\s*1\.\s+", previous.answer))
+    if not has_rank and not re.search(r"\b(?:tienda|sucursal)\b", _plain(previous.answer)):
         return None
     path = data_dir / "tiendas.csv"
     if not path.is_file():
@@ -41,7 +44,7 @@ def _top_store(previous: VerifiedTurn, data_dir: Path) -> str | None:
     top_line = next(
         (line for line in previous.answer.splitlines() if re.match(r"^\s*1\.\s+", line)),
         "",
-    )
+    ) if has_rank else previous.answer
     with path.open(encoding="utf-8-sig", newline="") as handle:
         known = [row.get("nombre", "").strip() for row in csv.DictReader(handle)]
     matches = [name for name in known if name and _plain(name) in _plain(top_line)]
@@ -68,10 +71,15 @@ def resolve_data_followup(question: str, previous: VerifiedTurn | None,
     # Never silently override an explicit reference to another store.
     store = _top_store(previous, data_dir)
     stores_path = data_dir / "tiendas.csv"
+    named = []
     if stores_path.is_file():
         with stores_path.open(encoding="utf-8-sig", newline="") as handle:
             names = [r.get("nombre", "").strip() for r in csv.DictReader(handle)]
-        if any(name and _plain(name) in q for name in names):
+        named = [name for name in names if name and _plain(name).removeprefix("tienda ") in q]
+        if named and not (len(named) == 1 and store and
+                          named[0] != store and
+                          re.search(r"\b(?:sus|esa|aquella)\b", q) and
+                          re.search(r"\b(?:compar\w*|versus|vs)\b", q)):
             return None
 
     current_month = MONTH_RE.findall(q)
@@ -84,6 +92,11 @@ def resolve_data_followup(question: str, previous: VerifiedTurn | None,
     explicit_years = re.findall(r"\b20\d{2}\b", q)
     if explicit_years and any(year != "2026" for year in explicit_years):
         return None
+
+    if (len(named) == 1 and store and named[0] != store
+            and re.search(r"\b(?:compar\w*|versus|vs)\b", q)
+            and re.search(r"\b(?:productos?|sku)\b", q)):
+        return f"Compara productos de {store} y {named[0]} en {month} de 2026."
 
     # Short "¿Y en julio?" retains the previous ranking question, not
     # an arbitrary store; it is re-executed for the new month.
