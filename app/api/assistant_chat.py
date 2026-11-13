@@ -26,7 +26,7 @@ _CONNECTION = re.compile(
 )
 _GREETING = re.compile(r"^(?:hola|buenos dias|buenas tardes|buenas noches|hey|que tal|saludos|holi)[!?,.\s]*$")
 _THANKS = re.compile(r"^(?:gracias|muchas gracias|te agradezco)[!,.\s]*$")
-_WHO = re.compile(r"\b(quien eres|que eres|como te llamas)\b")
+_WHO = re.compile(r"\b(quien eres|que eres|como te llamas|para que (?:fuiste|has sido) cread[oa]|por que (?:fuiste|has sido) cread[oa]|cual es tu proposito|que proposito tienes|para que te crearon)\b")
 _CAPABILITIES = re.compile(r"\b(que puedes hacer|en que me puedes ayudar|como me ayudas|para que sirves|ayuda|que sabes hacer)\b")
 _MODEL = re.compile(r"\b(que modelo|cual modelo|modelo usas|modelo utilizas|que ia usas)\b")
 
@@ -53,6 +53,10 @@ def classify_assistant_question(question: str) -> str | None:
     A greeting combined with a health question takes precedence over greeting.
     """
     q = _plain(question).strip().strip(" ¡!¿?.,;:")
+    # Explicit introspection about this assistant takes precedence, even if
+    # the user says "asistente H-E-B" or "modelo de tienda".
+    if _WHO.search(q) and re.search(r"\b(?:tu|te|fuiste|eres|crearon|creado|creada)\b", q):
+        return "identity"
     if _WORKPLACE_CONTEXT.search(q):
         return None
     if _OLLAMA.search(q) and (_CONNECTION.search(q) or "estas" in q or "esta" in q):
