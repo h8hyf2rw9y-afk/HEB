@@ -174,3 +174,85 @@ def test_client_parses_tool_arguments_sent_as_json_string():
     result = c.chat([{"role": "user", "content": "hola"}], tools=[{"type": "function", "function": {"name": "buscar_politicas"}}])
     assert result.tool_calls == [{"name": "buscar_politicas", "arguments": {"consulta": "mermas"}}]
     assert fake.requests[0]["tools"]
+
+
+def test_explicit_history_is_passed_as_context_not_corporate_evidence(monkeypatch):
+    fake = _install(monkeypatch, Script(
+        tool_reply("buscar_politicas", {"consulta": "¿Puedo aceptar una devolución sin ticket?"}),
+        lambda req: ollama_reply(last_tool_output(req)),
+    ))
+    data = client.post("/chat", json={
+        "question": "¿Y si no tiene el ticket?",
+        "history": [
+            "¿Cómo hago una devolución de producto?",
+            "Es una licuadora",
+            "La compró hace 20 días",
+        ],
+    }).json()
+    assert data["status"] in {"answered", "needs_clarification"}
+    assert fake.requests
+    first_prompt = fake.requests[0]["messages"][-1]["content"]
+    assert "licuadora" in first_prompt and "20 días" in first_prompt
+    assert "NO es evidencia empresarial" in first_prompt
+
+
+def test_tool_arguments_wrong_key_use_original_query():
+    from app.llm.agent import _tool_query
+    original = "¿Qué tienda vendió más en agosto de 2026?"
+    assert _tool_query(
+        {"name": "consultar_datos_tienda", "arguments": {"consulta": "julio 2026"}},
+        original
+    ) == (original, "argumentos_no_validos")
+
+
+def test_ticket_purchase_cannot_be_replaced_by_it_support():
+    from app.llm.agent import _tool_query
+    original = "¿Puedo devolver un producto sin ticket de compra?"
+    query, warning = _tool_query({
+        "name": "buscar_politicas",
+        "arguments": {"consulta": "ticket de soporte Mesa de Servicio"},
+    }, original)
+    assert query == original
+    assert warning is not None
+
+
+def test_missing_original_card_constraint_not_dropped_by_agent():
+    from app.llm.agent import _tool_query
+    original = "¿Cómo se hace el reembolso si no trae la tarjeta original?"
+    query, warning = _tool_query({
+        "name": "buscar_politicas",
+        "arguments": {"consulta": "¿Cómo se hace el reembolso con tarjeta?"},
+    }, original)
+    assert query == original and warning is not None
+
+
+def test_partial_multi_tool_answer_includes_abstention(monkeypatch):
+    settings = LLMSettings(enabled=True, model="llama3.2", timeout_s=2)
+    fake = FakeOllama(Script(
+        tool_reply("consultar_datos_tienda", {"pregunta": "ventas de agosto 2026"}),
+        tool_reply("buscar_politicas", {"consulta": "norma no disponible"}),
+        ollama_reply("Ventas contestadas, sin mencionar las políticas."),
+    ))
+    def data_tool(q):
+        return ToolResult(kind="datos", status="answered",
+                          answer="Ventas: 250 pesos.", evidence=[{"source":"ventas.csv"}])
+    def policy_tool(q):
+        return ToolResult(kind="politicas", status="insufficient_data",
+                          answer="No encontré información de esa norma.", evidence=[])
+    agent = ToolAgent(settings, {
+        "consultar_datos_tienda": data_tool, "buscar_politicas": policy_tool,
+    }, OllamaChatClient(settings.base_url, settings.model, 2, transport=fake.transport))
+    outcome = agent.run("Ventas de agosto 2026 y norma no disponible")
+    assert outcome.handled and not outcome.generated
+    assert outcome.status == "needs_clarification"
+    assert "250 pesos" in outcome.answer
+    assert "No encontré información" in outcome.answer
+    assert outcome.fallback_reason == "resultado_parcial_no_verificado"
+
+
+def test_card_and_receipt_are_different_return_intents():
+    from app.api.return_intents import route_returns
+    assert route_returns(
+        "¿Cómo se hace la devolución si el cliente pagó con tarjeta y no trae la tarjeta original?"
+    ) is None
+    assert route_returns("¿Puedo devolver sin ticket de compra?").kind == "no_receipt"
