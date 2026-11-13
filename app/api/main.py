@@ -52,6 +52,7 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     conversation_id: str | None = None
     previous_question: str | None = Field(default=None, max_length=4000)
+    history: list[str] = Field(default_factory=list, max_length=6)
 
 
 class Metrics(BaseModel):
@@ -151,7 +152,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     start = time.perf_counter()
     question = request.question.strip()
     if _agent_applies(question):
-        out = AGENT.run(question, request.previous_question)
+        out = AGENT.run(question, request.previous_question, request.history)
         if out.handled:
             return ChatResponse(answer=out.answer, status=out.status, evidence=out.evidence,
                                 conflicts=out.conflicts, metrics=_agent_metrics(out, start))
@@ -184,7 +185,16 @@ def _deterministic_chat(request: ChatRequest, start: float, writer: GroundedWrit
         )
     # Returns and receipts require policy-specific routing. The previous question
     # is explicit client-supplied context (not a server-side remembered session).
-    return_route = route_returns(question, request.previous_question)
+    # UI-provided history is bounded, explicit context, not server memory.
+    context_question = request.previous_question
+    if request.history:
+        # Pick a past return-related question for short receipt follow-ups,
+        # rather than treating an intervening "sin ticket" as a new topic.
+        from app.api.return_intents import plain as _plain_return
+        prior = next((item for item in reversed(request.history)
+                      if "devol" in _plain_return(item) or "reembols" in _plain_return(item)), None)
+        context_question = prior or request.history[-1]
+    return_route = route_returns(question, context_question)
     if return_route is not None:
         if return_route.kind == "needs_context":
             return ChatResponse(
