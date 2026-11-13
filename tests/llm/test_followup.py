@@ -194,3 +194,41 @@ def test_opt_in_fast_exact_sales_ranking(monkeypatch):
     assert result["metrics"]["llm_calls"] == 0
     assert result["metrics"]["answer_mode"] == "grounded_data"
     assert {e["source"] for e in result["evidence"]} == {"ventas.csv", "tiendas.csv"}
+
+
+
+def test_elliptical_agent_answer_remembers_verified_ranking_tool_query(monkeypatch):
+    from app.llm.agent import AgentOutcome
+    from app.llm.config import LLMSettings
+
+    class ScriptedAgent:
+        settings = LLMSettings(enabled=True, mode="agente")
+
+        def run(self, question, previous_question=None, history=None):
+            assert question == "¿Y cómo le fue en agosto?"
+            return AgentOutcome(
+                handled=True, status="answered", kind="datos",
+                answer=("Ventas netas por tienda en agosto de 2026: "
+                        "Tienda Valle Norte, Tienda Cumbres, Tienda Anáhuac y Tienda Lomas del Sur."),
+                evidence=EVIDENCE,
+                tool_calls=[
+                    {"name": "consultar_datos_tienda",
+                     "query": "¿Cuántas tiendas tienen ventas en agosto de 2026?",
+                     "status": "answered"},
+                    {"name": "consultar_datos_tienda",
+                     "query": "¿Qué tienda vendió más en agosto de 2026?",
+                     "status": "answered"},
+                ],
+            )
+
+    monkeypatch.setattr(main, "AGENT", ScriptedAgent())
+    monkeypatch.delenv("HEB_FAST_ANALYTICS", raising=False)
+    sid = uuid4().hex
+    result = client.post("/chat", json={
+        "question": "¿Y cómo le fue en agosto?", "conversation_id": sid,
+    }).json()
+    assert result["status"] == "answered"
+    cached = SESSIONS.latest_verified(sid)
+    assert cached is not None
+    assert cached.question == "¿Qué tienda vendió más en agosto de 2026?"
+    assert resolve_data_followup("¿Por qué crees que vendió más?", cached) is not None
