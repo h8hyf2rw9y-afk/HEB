@@ -27,7 +27,7 @@ from app.api.session_memory import VerifiedTurn
 
 from .config import LLMSettings
 from .ollama_client import LLMError, OllamaChatClient
-from .validation import has_injection, validate_rewrite
+from .validation import has_injection, compose_grounded_answer
 
 logger = logging.getLogger(__name__)
 
@@ -315,13 +315,16 @@ class ToolAgent:
         evidence = [e for r in answered for e in r.evidence]
         conflicts = [c for r in answered for c in r.conflicts]
         allowed = {str(e.get("source", "")) for e in evidence if e.get("source")}
-        check = validate_rewrite(kind=kind, question=question, verified=verified, candidate=final_text,
-                                 allowed_sources=allowed, conflicts=conflicts)
-        if not check.ok:
-            out.warnings.append("Redacción del modelo descartada por validación: " + "; ".join(check.failures[:5]))
+        composed = compose_grounded_answer(kind=kind, question=question, verified=verified,
+                                           candidate=final_text, allowed_sources=allowed,
+                                           conflicts=conflicts)
+        if not composed.ok:
+            out.warnings.append("Redacción del modelo descartada por validación: " + "; ".join(composed.failures[:5]))
             return self._verified(out, results, "validacion_fallida", start)
         out.handled, out.generated = True, True
-        out.answer, out.status, out.kind = final_text.strip(), "answered", kind
+        out.answer, out.status, out.kind = composed.answer, "answered", kind
+        if composed.evidence_appended:
+            out.warnings.append("Resumen generado por el modelo con el detalle completo verificado adjunto.")
         out.evidence, out.conflicts = evidence, conflicts
         return out
 
