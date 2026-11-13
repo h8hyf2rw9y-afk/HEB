@@ -24,13 +24,13 @@ Llena cada sección en 3 a 5 líneas. No hace falta que sea prosa pulida; nos in
 - Políticas: 46 de 49 preguntas independientes, escritas antes de ajustar nada, con 0 abstenciones falsas y citas verificadas contra el PDF.
 - Datos: las cifras se recalculan en las pruebas con Python puro, sin DuckDB, y coinciden (por ejemplo, Tienda Valle Norte: $2,163,062.36 MXN en agosto de 2026).
 - 433 pruebas automáticas pasan en Windows y Ubuntu, incluida una conversación con las siete preguntas que fallaron en mi prueba real; con Ollama simulado se comprueba que una cifra alterada, una tienda cambiada o una cita inventada nunca llegan al usuario.
-- Con Llama 3.2 real, antes de la estabilización: 12 de 12 estados correctos en modo redacción y 7 de 9 redacciones validadas. [PENDIENTE: resultado de las siete preguntas con Qwen real tras la estabilización]
+- Con Qwen real en mi laptop, las siete preguntas como una sola conversación: 7 de 7 con las cifras y fuentes correctas, una llamada al modelo por pregunta, y 6 de 7 redactadas por Qwen; en la de la licuadora su redacción no pasó la validación y se mostró el texto verificado.
 
 ## 4. Costo por interacción y cómo lo medí
-- Costo real por token: $0, porque el modelo corre local. El costo real es tiempo de cómputo: el modo determinista responde en milisegundos y el modelo tarda decenas de segundos por respuesta en mi laptop. [PENDIENTE: mediana de segundos por pregunta con Qwen]
+- Costo real por token: $0, porque el modelo corre local. El costo real es tiempo de cómputo: con Qwen en mi laptop la mediana fue de 30 s por pregunta (de 9 a 91 s, a unos 6 a 9 tokens/s), contra milisegundos del modo determinista.
 - Cada respuesta de `/chat` reporta llamadas al LLM, tokens de entrada y salida (contadores reales de Ollama) y el tiempo por etapa: carga, lectura del prompt y generación.
-- Para bajar el costo, una pregunta clara hace una sola llamada en lugar de dos y los resúmenes de datos tienen tope de 220 tokens: en las siete preguntas, de 13 a 7 llamadas y de 36,900 a 16,941 caracteres enviados.
-- Simulé el costo con la API de Anthropic usando los tokens medidos (Llama 3.2, modo agente): mediana de 1,239 tokens de entrada y 79 de salida, unos $0.0002 por pregunta con Haiku 5.5, $0.0033 con Sonnet 5.5 y $0.0066 con Opus 5.5. Es una aproximación: Claude cuenta tokens distinto. [PENDIENTE: actualizar con los tokens de Qwen]
+- Para bajar el costo, una pregunta clara hace una sola llamada en lugar de dos y los resúmenes de datos tienen tope de 220 tokens: en las siete preguntas pasé de 13 a 7 llamadas; el ranking bajó de 57 a 35 s y el seguimiento de julio de 55 a 9 s.
+- Simulé el costo con la API de Anthropic usando los tokens medidos con Qwen: mediana de 724 tokens de entrada y 45 de salida, unos $0.0001 por pregunta con Haiku 5.5, $0.0019 con Sonnet 5.5 y $0.0038 con Opus 5.5 ($0.12, $2.40 y $4.80 por 1,000 preguntas). Es una aproximación: Claude cuenta tokens distinto y cobra su razonamiento como salida.
 
 ## 5. Qué haría con dos semanas más
 - Medir Qwen, Llama 3.2 y Llama 3.1 con las mismas preguntas y elegir por respuestas validadas, latencia y tokens.

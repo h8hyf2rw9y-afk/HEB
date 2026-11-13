@@ -97,6 +97,8 @@ def test_real_model_seven_questions_one_conversation():
               f"llamadas={m['llm_calls']} tokens={m['input_tokens']}+{m['output_tokens']} total={m['latency_ms'] / 1000:.1f}s "
               f"prompt={t.get('llm_prompt_eval_ms', 0) / 1000:.1f}s generación={t.get('llm_generation_ms', 0) / 1000:.1f}s "
               f"tokens/s={t.get('tokens_per_s')}\n   resuelta={m.get('resolved_question')}\n   {data['answer'][:400]}")
+        if m["warnings"]:
+            print("   avisos:", " | ".join(m["warnings"]))
         missing = [text for text in must if text not in data["answer"]]
         if data["status"] != "answered" or missing:
             problems.append((question, data["status"], missing))
