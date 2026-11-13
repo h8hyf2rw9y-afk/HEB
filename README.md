@@ -4,6 +4,12 @@ Asistente conversacional en español para analizar datos de tiendas y consultar 
 
 **Tecnologías:** Python 3.11 · Streamlit · FastAPI · DuckDB + CSV · RAG sobre PDF · Ollama (LLM local).
 
+## Video de demostración
+
+[▶ Ver demostración del asistente H-E-B en Loom](https://www.loom.com/share/1f667d9cdf1d4a2f823deab4be899708)
+
+Video de presentación del ejercicio técnico: muestra el funcionamiento y la explicación de la solución. Puedes verlo directamente en Loom sin instalar el proyecto.
+
 ## Inicio rápido: objetivo de 10 minutos
 
 La meta es abrir el asistente en **menos de 10 minutos cuando ya están instalados Git, Python 3.11, Ollama y el modelo local**. La primera instalación de dependencias y la descarga del modelo (varios GB) pueden superar ese tiempo según el equipo y la conexión. **No se necesita API de pago.**
