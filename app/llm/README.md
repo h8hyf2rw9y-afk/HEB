@@ -88,6 +88,29 @@ Con la vía rápida, `metrics.llm_calls=0` para esas consultas es **esperado**; 
 
 Una pregunta que confunde `cambio de producto` con `reembolso` debe recuperar evidencia de ambos conceptos, o pedir precisión sin afirmar una equivalencia inexistente. También se reconoce la grafía «rembolso».
 
+## Redacción obligatoria del modelo cuando está disponible
+
+Con `HEB_LLM_ENABLED=true`, las consultas conocidas del catálogo y el modo
+`HEB_FAST_ANALYTICS=true` **no omiten** la generación. DuckDB/RAG obtienen
+primero la evidencia verificada y Ollama redacta la explicación: normalmente
+una sola llamada al modelo, sin otra llamada adicional para elegir herramienta.
+El agente conserva el flujo de selección mediante herramientas para preguntas
+que requieren planificación.
+
+En resúmenes de ventas por tienda, si el texto del modelo omite tiendas del
+ranking, el sistema puede conservar la introducción redactada y adjuntar
+`**Detalle verificado de los CSV:**` con todas las cifras inalteradas; vuelve
+a validar el conjunto y rechaza cifras nuevas, valores incorrectos o fuentes
+inventadas. **No aplica** esta flexibilidad a SKU individuales, inventario
+por unidad ni políticas: esas respuestas conservan validación estricta.
+
+Si Ollama falla, omite datos críticos, cambia reglas o la validación detecta
+un problema, se entrega la respuesta verificable como *fallback* y
+`metrics.generated=false` junto con `fallback_reason`; no se afirma que
+Ollama escribió una respuesta que no escribió. Tampoco se redactan
+predicciones o políticas sin fuentes verificadas. Esto prioriza seguridad
+ante la garantía absoluta de generación.
+
 ## Latencia y tiempos de espera en Streamlit
 
 El agente puede invocar Ollama varias veces de forma secuencial (selección de herramienta + redacción, y hasta cuatro rondas). El frontend ya no impone un límite fijo de 30 s: utiliza `HEB_CHAT_TIMEOUT_S` (por defecto 540 s) para la petición completa. Puedes ajustarlo antes de iniciar Streamlit:
