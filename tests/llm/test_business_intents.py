@@ -94,3 +94,21 @@ def test_conversation_id_does_not_imply_back_end_memory():
     assert first["status"] == "answered"
     assert "4 tiendas" in first["answer"]
     assert "4 tiendas" not in second["answer"]
+
+
+
+@pytest.mark.parametrize("question", [
+    "Cuantos productos tiene cada tienda ?",
+    "¿Cuántos SKU hay en cada tienda?",
+])
+def test_count_products_not_reorder_alerts(question, monkeypatch):
+    monkeypatch.setattr(main, "answer_data_question", lambda *args, **kw:
+                        pytest.fail("Exact SKU counts do not require Ollama SQL planning"))
+    result = client.post("/chat", json={"question": question}).json()
+    assert result["status"] == "answered"
+    for store in ("Valle Norte", "Cumbres", "Anáhuac", "Lomas del Sur"):
+        assert store in result["answer"]
+    assert "120 SKU" in result["answer"]
+    assert "punto de reorden" not in result["answer"]
+    assert result["metrics"]["llm_calls"] == 0
+    assert {e["source"] for e in result["evidence"]} == {"inventario.csv", "tiendas.csv"}
