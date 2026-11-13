@@ -1,6 +1,8 @@
 """FastAPI entry points for structured queries and grounded policy answers."""
 from __future__ import annotations
 
+import os
+import re
 import time
 from pathlib import Path
 from typing import Annotated, Literal
@@ -155,6 +157,34 @@ def _agent_applies(question: str) -> bool:
             and route_business_question(question) is None)
 
 
+def _fast_analytics(question: str, start: float) -> ChatResponse | None:
+    """Optional reliable low-latency path for already-supported exact CSV facts.
+
+    Natural-language explorations still go to the agent; no SQL is generated.
+    This is opt-in to preserve tool-calling benchmarks and existing behavior.
+    """
+    if os.getenv("HEB_FAST_ANALYTICS", "false").lower() not in {"1", "true", "yes"}:
+        return None
+    from app.tools.analytics import plain as _plain_data
+    q = _plain_data(question).strip(" ¡!¿?.,;:")
+    rank = bool(re.search(
+        r"\b(?:que|cual)\s+tienda\s+vendio\s+mas\b"
+        r"|\btienda\s+(?:con\s+)?(?:mas|mayores)\s+ventas\b",
+        q,
+    ))
+    if not rank:
+        return None
+    result = answer_data_question(question)
+    return ChatResponse(
+        answer=result.answer, status=result.status, evidence=result.evidence,
+        metrics=Metrics(
+            answer_mode="grounded_data",
+            latency_ms=round((time.perf_counter() - start) * 1000, 2),
+            warnings=["Consulta exacta ejecutada en DuckDB sin LLM (HEB_FAST_ANALYTICS=true)."],
+        ),
+    )
+
+
 def _agent_metrics(out: AgentOutcome, start: float) -> Metrics:
     emb = out.tool_metrics
     modes = [m.get("retrieval_mode") for m in emb if m.get("retrieval_mode")]
@@ -241,6 +271,9 @@ def chat(request: ChatRequest) -> ChatResponse:
 def _chat_once(request: ChatRequest, verified_context=None) -> ChatResponse:
     start = time.perf_counter()
     question = request.question.strip()
+    fast = _fast_analytics(question, start)
+    if fast is not None:
+        return fast
     if _agent_applies(question):
         # A source-backed prior answer is context for the real ToolAgent only.
         # Test doubles and older implementations keep the three-argument API.
