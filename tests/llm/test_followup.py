@@ -108,3 +108,21 @@ def test_api_can_drill_into_products_without_invented_causes():
     assert "Tienda Valle Norte" in result["answer"] and "Tienda Cumbres" in result["answer"]
     assert "no demuestra sus causas" in result["answer"]
     assert result["metrics"]["resolved_question"] is not None
+
+
+
+def test_policy_followup_requeries_instead_of_replaying_old_answer():
+    from app.api.followup import resolve_policy_followup
+
+    previous = VerifiedTurn(
+        question="¿Cómo se hace una devolución de licuadora?",
+        answer="Respuesta documentada [procedimiento_devoluciones.pdf, p. 2].",
+        evidence=[{"source_type": "pdf", "source": "procedimiento_devoluciones.pdf",
+                   "reference": "p. 2"}],
+        kind="grounded_policy",
+    )
+    resolved = resolve_policy_followup("¿Y si no tiene el ticket?", previous)
+    assert resolved is not None and "devolución de licuadora" in resolved
+    assert "no tiene el ticket" in resolved
+    assert resolve_policy_followup("¿Qué tienda vendió más en agosto?", previous) is None
+    assert resolve_policy_followup("¿Y si no tiene el ticket?", PREVIOUS) is None
