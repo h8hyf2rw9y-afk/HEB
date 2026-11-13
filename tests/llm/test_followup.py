@@ -142,7 +142,7 @@ def test_model_rewording_cannot_change_store_identity():
 
 def test_why_followup_uses_product_breakdown_not_unverified_causes():
     resolved = resolve_data_followup("¿Y por qué crees que vendió más?", PREVIOUS)
-    assert resolved == "Compara productos de Tienda Valle Norte y Tienda Cumbres en agosto de 2026."
+    assert resolved == "¿Por qué Tienda Valle Norte vendió más que las otras tiendas en agosto de 2026?"
 
 
 

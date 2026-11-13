@@ -147,11 +147,13 @@ CI ejecuta pruebas en Windows y Ubuntu usando un **Ollama simulado**. Estas prue
 **Windows:**
 
     .\.venv\Scripts\python.exe scripts\eval_agent_conversations.py --out data\eval_agent_conversations.json
+    .\.venv\Scripts\python.exe scripts\eval_agent_conversations.py --episode siete_preguntas_reales --out data\eval_siete_preguntas.json
     .\.venv\Scripts\python.exe scripts\eval_llm_modes.py --out data\eval_llm_modes.json
 
 **macOS/Linux:**
 
     ./.venv/bin/python scripts/eval_agent_conversations.py --out data/eval_agent_conversations.json
+    ./.venv/bin/python scripts/eval_agent_conversations.py --episode siete_preguntas_reales --out data/eval_siete_preguntas.json
     ./.venv/bin/python scripts/eval_llm_modes.py --out data/eval_llm_modes.json
 
 Para estimar cuánto costarían esos tokens con la API de Anthropic (simulación: el costo real por token es $0 porque el modelo corre localmente):
@@ -206,6 +208,8 @@ DuckDB usa consultas SQL parametrizadas o plantillas verificadas; el LLM no ejec
 | OLLAMA_BASE_URL | http://127.0.0.1:11434 | URL local de Ollama |
 | HEB_LLM_TIMEOUT_S | 120 | Límite por llamada al modelo, en segundos |
 | HEB_CHAT_TIMEOUT_S | 540 | Tiempo máximo de espera de Streamlit |
+| HEB_LLM_VERIFIED_FIRST | true | Si DuckDB o el RAG ya responden con evidencia, el modelo solo redacta (una llamada); con false, el modelo elige primero la herramienta |
+| HEB_LLM_KEEP_ALIVE | 30m | Tiempo que Ollama mantiene el modelo cargado entre preguntas |
 
 ### Alcance y limitaciones
 

@@ -1,4 +1,4 @@
-# Capa generativa local (Ollama + Llama 3.2)
+# Capa generativa local (Ollama)
 
 Dos modos, elegidos con `HEB_LLM_MODE` cuando `HEB_LLM_ENABLED=true`:
 
@@ -12,6 +12,17 @@ pregunta ─► Llama 3.2 ─► tool_call ─► DuckDB / RAG (código verifica
 ```
 
 Protecciones del agente: si el modelo cambia el mes, año, tienda o SKU al pasar la consulta a la herramienta, se ejecuta la pregunta original; como máximo 3 consultas por pregunta; una abstención de la herramienta se muestra tal cual; una salida de herramienta con instrucciones sospechosas no se devuelve al modelo; `metrics.tool_calls` muestra qué consultó el modelo y con qué texto.
+
+**Primero la evidencia (`HEB_LLM_VERIFIED_FIRST=true`, por defecto).** En modo agente, el backend intenta primero la ruta determinista, que tarda milisegundos y no usa el modelo. Si DuckDB o el RAG devuelven una respuesta verificada con evidencia, el modelo solo la redacta: una llamada en lugar de dos. El agente con herramientas queda para las preguntas que ninguna ruta verificada responde. Una pregunta de aclaración precisa (por ejemplo, ticket de compra o de soporte) se devuelve sin llamar al modelo.
+
+**Respuestas de datos: resumen más tabla verificada.** Para resultados de los CSV, el modelo recibe un prompt compacto y escribe un resumen de 2 a 4 oraciones (como máximo 220 tokens). La aplicación muestra debajo la tabla verificada completa, salvo que el resumen ya la contenga entera. El resumen se valida con `validate_data_summary`:
+
+- ninguna cifra nueva; un redondeo como «2.16 millones» solo se acepta si corresponde a una única cifra verificada;
+- cada cifra junto a su tienda, categoría, SKU o producto;
+- si dice quién vendió más, debe ser el primero del ranking;
+- se rechazan conectores causales sin respaldo («debido a», «gracias a», «porque»).
+
+Las políticas conservan la reescritura estricta, con todas las citas y condiciones. Su tope de salida crece con el tamaño de la respuesta verificada, hasta 1,600 tokens, para no cortar una cita a la mitad.
 
 **`redaccion`.** El enrutador determinista consulta y el modelo solo reescribe la respuesta verificada.
 

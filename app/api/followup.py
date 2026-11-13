@@ -20,7 +20,8 @@ SALES_RE = re.compile(r"\b(?:venta\w*|vend\w*|factur\w*)\b")
 FOLLOWUP_RE = re.compile(
     r"\b(?:esa tienda|esa sucursal|esa misma tienda|le fue|sus ventas|"
     r"cuanto vendio|que productos|cuales productos|sus productos|"
-    r"y en (?:junio|julio|agosto)|y cuanto|en (?:junio|julio|agosto)|por que|a que se debe)\b"
+    r"y en (?:junio|julio|agosto)|y cuanto|en (?:junio|julio|agosto)|por que|a que se debe|"
+    r"compar\w*(?:la|lo)|compar\w* con)\b"
 )
 
 
@@ -29,10 +30,33 @@ def _plain(text: str) -> str:
     return "".join(c for c in normalized if not unicodedata.combining(c))
 
 
+EXPLICIT_DATA_REF = re.compile(
+    r"\b(?:esa tienda|esa sucursal|esa misma tienda|sus ventas|sus productos|"
+    r"compar\w*(?:la|lo)|le fue a esa)\b"
+)
+
+
+def _named_store(question: str, data_dir: Path) -> str | None:
+    path = data_dir / "tiendas.csv"
+    if not path.is_file():
+        return None
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        names = [r.get("nombre", "").strip() for r in csv.DictReader(handle)]
+    q = _plain(question)
+    hits = [n for n in names if n and _plain(n) in q]
+    return hits[0] if len(hits) == 1 else None
+
+
 def _top_store(previous: VerifiedTurn, data_dir: Path) -> str | None:
-    """Use the first ranked result from an actual sales CSV answer."""
+    """The store the previous verified data turn was about: the one it named
+    explicitly, else the first ranked store of the recomputed answer."""
     if not re.search(r"\b(?:tienda|sucursal)\b", _plain(previous.question)):
         return None
+    explicit = _named_store(previous.question, data_dir)
+    if explicit:
+        from app.tools.analytics import answer_data_question
+        if answer_data_question(previous.question, data_dir).status == "answered":
+            return explicit
     # Recompute the previous analytical answer from the CSV. Even a model
     # redaction that passed validation must not become an authority on rank.
     from app.tools.analytics import answer_data_question
@@ -82,9 +106,9 @@ def resolve_data_followup(question: str, previous: VerifiedTurn | None,
         with stores_path.open(encoding="utf-8-sig", newline="") as handle:
             names = [r.get("nombre", "").strip() for r in csv.DictReader(handle)]
         named = [name for name in names if name and _plain(name).removeprefix("tienda ") in q]
+        refers_back = re.search(r"\b(?:sus|esa|aquella)\b|\bcompar\w*(?:la|lo)\b", q)
         if named and not (len(named) == 1 and store and
-                          named[0] != store and
-                          re.search(r"\b(?:sus|esa|aquella)\b", q) and
+                          named[0] != store and refers_back and
                           re.search(r"\b(?:compar\w*|versus|vs)\b", q)):
             return None
 
@@ -99,9 +123,18 @@ def resolve_data_followup(question: str, previous: VerifiedTurn | None,
     if explicit_years and any(year != "2026" for year in explicit_years):
         return None
 
-    # "Why?" is not proof of causality. Provide a fresh, verifiable
-    # product-sales comparison of the two ranked stores instead.
-    if (store and re.search(r"\b(?:por que|a que se debe)\b", q)
+    # "Why did it sell more than the others?" is not proof of causality: answer
+    # with a fresh, verifiable breakdown of the store against the average of the
+    # other stores (volume, price per unit, categories, channels). The lead may
+    # be stated in the question itself, not only in the previous ranking turn.
+    why = bool(re.search(r"\b(?:por que|a que se debe|que explica)\b", q))
+    lead = re.search(r"\b(?:mas|mayor|mejor|ranking|supero)\b", q) or re.search(
+        r"\b(?:mas|mayor|mejor|ranking)\b", prior)
+    versus_one = re.search(r"\bque (?:otra|la otra|la segunda)\b|\bsegundo lugar\b", q)
+    if store and why and lead and not versus_one and not named:
+        return f"¿Por qué {store} vendió más que las otras tiendas en {month} de 2026?"
+    # "...than another (store)?" keeps the two-store product comparison.
+    if (store and why
             and re.search(r"\b(?:mas|mayor|mejor|ranking)\b", prior)):
         from app.tools.analytics import answer_data_question
         canonical = answer_data_question(previous.question, data_dir)
@@ -118,7 +151,7 @@ def resolve_data_followup(question: str, previous: VerifiedTurn | None,
 
     if (len(named) == 1 and store and named[0] != store
             and re.search(r"\b(?:compar\w*|versus|vs)\b", q)
-            and re.search(r"\b(?:productos?|sku)\b", q)):
+            and (re.search(r"\b(?:productos?|sku)\b", q) or re.search(r"\bcompar\w*(?:la|lo)\b", q))):
         return f"Compara productos de {store} y {named[0]} en {month} de 2026."
 
     # Short "¿Y en julio?" retains the previous ranking question, not

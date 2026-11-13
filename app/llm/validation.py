@@ -360,3 +360,130 @@ def compose_grounded_answer(*, kind: str, question: str, verified: str,
     if not checked.ok:
         return ComposedRewrite(False, verified, checked.failures)
     return ComposedRewrite(True, composite, [], evidence_appended=True)
+
+
+# --- Data summaries: the model writes a short summary, the app shows the table ---
+
+CAUSAL_RE = re.compile(
+    r"\b(?:debido a|gracias a|se debe a|a causa de|porque|ya que|puesto que|esto se explica por|"
+    r"por (?:sus|las|la|el|los|una|un) (?:promocion\w*|ubicacion\w*|campana\w*|marketing|publicidad|"
+    r"trafico|afluencia|clientes|precios? mas bajos?))\b"
+)
+APPROX_RE = re.compile(r"\$?\s?(\d+(?:[.,]\d+)?)\s*(millones|mdp|mil)\b", re.IGNORECASE)
+SUPERLATIVE_RE = re.compile(r"\b(?:mas vend\w*|vendio mas|mas ventas|mayores ventas|mayor venta|primer lugar|primera|lider\w*|la que mas)\b")
+_MONEY_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)")
+
+
+def _entity_keys(verified: str) -> list[tuple[str, set[str], int | None]]:
+    """(entity, its figures, rank) for verified lines shaped "[1.|-] Entidad: cifras"."""
+    out = []
+    for line in verified.splitlines():
+        rank_match = re.match(r"^\s*(\d{1,2})[.)]\s+", line)
+        body = LIST_MARKER_RE.sub("", line).strip().lstrip("-•* ").strip()
+        key, sep, rest = body.partition(":")
+        if not sep or not rest.strip() or "(" in key or len(key) > 80 or len(key.split()) > 12:
+            continue
+        values = {v for v in extract_facts(rest).values if not v.startswith("m:")}
+        if values:
+            out.append((key.strip(), values, int(rank_match.group(1)) if rank_match else None))
+    return out
+
+
+def _aliases(key: str, all_keys: list[str] | None = None) -> list[str]:
+    """Ways a summary can name an entity: the full key, the store without
+    "Tienda", and for composite keys ("Tienda X · SKU-1013 · Bolillo pieza")
+    each part that belongs to this row only (a shared store name does not)."""
+    plain = _plain(key)
+    names = [plain]
+    if plain.startswith("tienda "):
+        names.append(plain.removeprefix("tienda "))
+    parts = [p.strip() for p in plain.split("·") if p.strip()]
+    if len(parts) > 1:
+        others = [_plain(k) for k in (all_keys or []) if k != key]
+        names += [p for p in parts if not any(p in o for o in others)]
+    return [n for n in names if len(n) >= 3]
+
+
+def _resolve_approximations(text: str, verified: str) -> tuple[str, list[str]]:
+    """Replace «2.16 millones» by the unique verified amount it rounds; an
+    approximation that matches no amount, or more than one, is reported."""
+    amounts = [float(m.replace(",", "")) for m in _MONEY_RE.findall(verified)]
+    problems: list[str] = []
+
+    def swap(match: re.Match) -> str:
+        raw, unit = match.group(1), match.group(2).lower()
+        number = float(raw.replace(",", "."))
+        scale = 1_000 if unit == "mil" else 1_000_000
+        decimals = len(re.split(r"[.,]", raw)[1]) if re.search(r"[.,]", raw) else 0
+        hits = sorted({a for a in amounts if round(a / scale, decimals) == round(number, decimals)})
+        if len(hits) == 1:
+            return f"${hits[0]:,.2f}"
+        problems.append(match.group(0))
+        return match.group(0)
+
+    return APPROX_RE.sub(swap, text), problems
+
+
+def validate_data_summary(*, question: str, verified: str, summary: str,
+                          allowed_sources: set[str]) -> ValidationResult:
+    """A short model summary of a verified CSV result. It may omit rows (the full
+    verified table is shown with it) but it may not add, alter, reassign or
+    re-rank any figure, invent sources, or claim causes the data do not record."""
+    failures: list[str] = []
+    cand = summary.strip()
+    if not cand:
+        return ValidationResult(False, ["respuesta vacía"])
+    if len(cand) > 1200:
+        failures.append("resumen demasiado largo")
+    resolved, approx = _resolve_approximations(cand, verified)
+    if approx:
+        failures.append("cifra aproximada sin correspondencia única: " + ", ".join(approx))
+    v, q, c = extract_facts(verified), extract_facts(question), extract_facts(resolved)
+    extra = set(c.values) - v.values - q.values
+    keys = _entity_keys(verified)
+    key_names = [k for k, _, _ in keys]
+    if 2 <= len(keys) <= 20:  # "las cuatro tiendas" may name the row count in words
+        extra -= {f"n:{len(keys)}"}
+    if extra:
+        failures.append("cifras o fechas nuevas: " + ", ".join(sorted(extra)))
+    if c.citations:
+        failures.append("citas en una respuesta de datos")
+    unknown_files = sorted(c.files - v.files - {s.lower() for s in allowed_sources})
+    if unknown_files:
+        failures.append("fuentes inexistentes: " + ", ".join(unknown_files))
+
+    # Each figure stays with its entity: within a sentence, figures belong to the
+    # entity mentioned just before them (or the first one, if they come first).
+    owners: dict[str, set[str]] = {}
+    for key, values, _ in keys:
+        for value in values:
+            owners.setdefault(value, set()).add(key)
+    plain_resolved = _plain(resolved)
+    for sentence in re.split(r"(?<=[.!?;])\s+(?=[^\d])|\n+", resolved):
+        ps = _plain(sentence)
+        mentions = sorted((ps.find(alias), key) for key, _, _ in keys for alias in _aliases(key, key_names)
+                          if alias and ps.find(alias) >= 0)
+        if not mentions:
+            continue
+        cuts = [pos for pos, _ in mentions] + [len(ps)]
+        for i, (pos, key) in enumerate(mentions):
+            start = 0 if i == 0 else pos
+            window = extract_facts(_resolve_approximations(sentence[start:cuts[i + 1]], verified)[0]).values
+            for value in window:
+                if value in owners and key not in owners[value]:
+                    failures.append(f"cifra {value} atribuida a «{key}»")
+
+    ranked = sorted((rank, key) for key, _, rank in keys if rank is not None)
+    if ranked and SUPERLATIVE_RE.search(plain_resolved):
+        found = [(plain_resolved.find(alias), key) for key, _, _ in keys for alias in _aliases(key, key_names)
+                 if plain_resolved.find(alias) >= 0]
+        first = min(found) if found else None
+        if first is not None and first[1] != ranked[0][1]:
+            failures.append(f"declara como primera a «{first[1]}» y la primera es «{ranked[0][1]}»")
+    if CAUSAL_RE.search(plain_resolved) and not CAUSAL_RE.search(_plain(verified)):
+        failures.append("afirma causas que los datos no registran")
+    if SQL_RE.search(cand):
+        failures.append("contiene SQL o código")
+    if INJECTION_RE.search(cand):
+        failures.append("reproduce instrucciones inyectadas")
+    return ValidationResult(not failures, sorted(set(failures)))

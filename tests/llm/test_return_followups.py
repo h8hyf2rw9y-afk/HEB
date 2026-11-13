@@ -16,7 +16,9 @@ RETURN_QUESTION = "Que pasa si un cliente quiere devolver un producto cual es el
 def test_generic_return_question_selects_general_process_not_blender_faq():
     route = route_returns(RETURN_QUESTION)
     assert route is not None and route.kind == "general_process"
-    assert "procedimiento_devoluciones.pdf" in route.query
+    # No product named: the steps come from the procedure's flow section and only
+    # the product is asked for; no similarity search that could surface FAQ P15.
+    assert route.product is None and route.query == ""
 
 
 @pytest.mark.parametrize("question", [
@@ -74,9 +76,13 @@ def test_first_return_question_rejects_appliance_only_faq(monkeypatch):
         )
     monkeypatch.setattr(main, "search_policies", wrong_result)
     data = client.post("/chat", json={"question": RETURN_QUESTION}).json()
-    assert data["status"] == "needs_clarification"
-    assert data["evidence"] == []
+    # The appliance-only FAQ is never shown for a generic return: the answer is the
+    # procedure's in-store flow, and it asks only for the missing product.
     assert "15 días" not in data["answer"]
+    assert {e["source"] for e in data["evidence"]} <= {"procedimiento_devoluciones.pdf"}
+    if data["status"] == "answered":  # index available: steps from section 7
+        assert "7. Flujo de atención en tienda" in data["answer"]
+        assert "¿Qué producto quiere devolver el cliente" in data["answer"]
 
 
 def test_followup_does_not_hit_technical_tickets(monkeypatch):

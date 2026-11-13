@@ -52,7 +52,8 @@ def generate_general_answer(
     """Return optional LLM prose with honest fallback; non-grounded on purpose."""
     if not settings.enabled:
         return CasualResult(answer=default_answer, fallback_reason="llm_desactivado")
-    provider = client or OllamaChatClient(settings.base_url, settings.model, settings.timeout_s)
+    provider = client or OllamaChatClient(settings.base_url, settings.model, settings.timeout_s,
+                                                keep_alive=settings.keep_alive)
     try:
         response = provider.chat(
             [

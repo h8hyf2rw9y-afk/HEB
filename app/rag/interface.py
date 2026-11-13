@@ -106,6 +106,43 @@ def search_policies(
     )
 
 
+def policy_section(
+    document: str, section_prefix: str, retriever: PolicyRetriever | None = None, max_chunks: int = 6
+) -> PolicySearchResponse:
+    """Extractive answer made of one named section of one document, in reading order.
+
+    For questions whose answer is a known procedure section (e.g. the in-store
+    return flow), similarity search is unreliable; reading the section itself is
+    exact and still fully cited. Returns ``insufficient_data`` if the section is
+    not in the index, so callers can fail closed."""
+    try:
+        retriever = retriever or get_retriever()
+    except IndexNotFoundError as exc:
+        return PolicySearchResponse(status="error", answer="Índice de políticas no disponible.", error=str(exc))
+    wanted = section_prefix.strip().lower()
+    chunks = [c for c in retriever.index.chunks
+              if c.document == document and (c.section or "").strip().lower().startswith(wanted)][:max_chunks]
+    if not chunks:
+        return PolicySearchResponse(status="insufficient_data",
+                                    answer=f"No encontré la sección «{section_prefix}» en {document}.")
+    texts, previous = [], ""
+    for c in chunks:
+        text = " ".join(c.text.split())
+        # Consecutive chunks overlap by design; drop the repeated lead-in.
+        for size in range(min(len(previous), len(text)), 29, -1):
+            if previous.endswith(text[:size]):
+                text = text[size:].lstrip(" .,;")
+                break
+        previous = " ".join(c.text.split())
+        texts.append(text)
+    lines = [f"- {t} [{c.document}, p. {c.page}, sección: {c.section}]" for t, c in zip(texts, chunks) if t]
+    return PolicySearchResponse(
+        status="answered", answer="\n".join(lines), coverage=1.0,
+        evidence=[PolicyEvidence(document=c.document, page=c.page, passage=c.text, section=c.section,
+                                 score=1.0, chunk_id=c.chunk_id) for c in chunks],
+    )
+
+
 def rag_health(settings: RagSettings | None = None) -> dict:
     """Lightweight status for a backend /health endpoint."""
     try:

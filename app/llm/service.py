@@ -8,8 +8,19 @@ from dataclasses import dataclass, field
 
 from .config import LLMSettings
 from .ollama_client import ChatResult, LLMError, OllamaChatClient
-from .prompts import build_messages
-from .validation import has_injection, compose_grounded_answer
+from .prompts import build_messages, build_summary_messages
+from .validation import compose_grounded_answer, has_injection, validate_data_summary, validate_rewrite
+
+SUMMARY_MAX_TOKENS = 220
+POLICY_MAX_TOKENS = 1600
+
+
+def policy_output_budget(verified_answer: str, configured: int) -> int:
+    """A policy rewrite must reproduce every condition and citation, so a fixed
+    cap can cut a long answer mid-citation (then validation fails after the whole
+    wait). Budget about one token per 3 characters of the verified text plus room
+    for connecting prose, never below the configured value or above 1600."""
+    return max(configured, min(POLICY_MAX_TOKENS, len(verified_answer) // 3 + 150))
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +49,8 @@ class GenerationOutcome:
 class GroundedWriter:
     def __init__(self, settings: LLMSettings, client: OllamaChatClient | None = None) -> None:
         self.settings = settings
-        self.client = client or OllamaChatClient(settings.base_url, settings.model, settings.timeout_s)
+        self.client = client or OllamaChatClient(settings.base_url, settings.model, settings.timeout_s,
+                                                keep_alive=settings.keep_alive)
 
     def rewrite(
         self,
@@ -71,11 +83,16 @@ class GroundedWriter:
 
         start = time.perf_counter()
         try:
+            summary_mode = kind == "datos" and not conflicts
             result: ChatResult = self.client.chat(
-                build_messages(question, kind, verified_answer, conflicts),
+                build_summary_messages(question, verified_answer) if summary_mode
+                else build_messages(question, kind, verified_answer, conflicts),
                 temperature=self.settings.temperature,
                 seed=self.settings.seed,
-                num_predict=self.settings.max_output_tokens,
+                # A data summary is 2-4 sentences: cap generation, which is the
+                # slowest stage on a laptop (about 5 tokens/s observed with Qwen3 4B).
+                num_predict=min(self.settings.max_output_tokens, SUMMARY_MAX_TOKENS) if summary_mode
+                else policy_output_budget(verified_answer, self.settings.max_output_tokens),
             )
         except LLMError as exc:
             fallback.fallback_reason = exc.reason
@@ -105,6 +122,8 @@ class GroundedWriter:
             generation_latency_ms=result.latency_ms,
         )
         sources = {e.get("source", "") for e in evidence if isinstance(e, dict)}
+        if summary_mode:
+            return self._data_summary(outcome, question, verified_answer, result.content, sources)
         composed = compose_grounded_answer(
             kind=kind,
             question=question,
@@ -123,4 +142,26 @@ class GroundedWriter:
         outcome.generated = True
         if composed.evidence_appended:
             outcome.warnings.append("El modelo redactó el resumen; se adjuntaron todas las cifras verificadas para no omitir resultados.")
+        return outcome
+
+    @staticmethod
+    def _data_summary(outcome: GenerationOutcome, question: str, verified: str, summary: str,
+                      sources: set[str]) -> GenerationOutcome:
+        """Data answers: the model's summary plus the verified table, unless the
+        summary already carries every verified figure (then the table would repeat it)."""
+        check = validate_data_summary(question=question, verified=verified, summary=summary,
+                                      allowed_sources=sources)
+        if not check.ok:
+            outcome.fallback_reason = "validacion_fallida"
+            outcome.warnings.append("Respuesta determinista; el resumen del modelo no pasó la validación: "
+                                    + "; ".join(check.failures))
+            logger.info("LLM summary rejected: %s", check.failures)
+            return outcome
+        # Omit the table only when the summary alone passes the strict full check
+        # (every row, figure, store code and entity present and correctly paired).
+        complete = validate_rewrite(kind="datos", question=question, verified=verified,
+                                    candidate=summary, allowed_sources=sources).ok
+        outcome.answer = summary.strip() if complete else (
+            summary.strip() + "\n\n**Detalle verificado (DuckDB):**\n" + verified)
+        outcome.generated = True
         return outcome

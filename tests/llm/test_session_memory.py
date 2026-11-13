@@ -48,7 +48,7 @@ def test_api_remembers_three_turns_but_not_other_session(monkeypatch):
     captured = []
 
     class CapturingAgent:
-        settings = LLMSettings(enabled=True, mode="agente")
+        settings = LLMSettings(enabled=True, mode="agente", verified_first=False)
 
         def run(self, question, previous_question=None, history=None):
             captured.append((question, list(history or [])))
@@ -83,7 +83,7 @@ def test_no_id_is_stateless_and_history_can_be_explicit(monkeypatch):
     captured = []
 
     class CapturingAgent:
-        settings = LLMSettings(enabled=True, mode="agente")
+        settings = LLMSettings(enabled=True, mode="agente", verified_first=False)
 
         def run(self, question, previous_question=None, history=None):
             captured.append(list(history or []))

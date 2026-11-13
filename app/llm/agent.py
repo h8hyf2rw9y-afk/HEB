@@ -217,7 +217,8 @@ class ToolAgent:
     def __init__(self, settings: LLMSettings, tools: dict[str, ToolFn], client: OllamaChatClient | None = None):
         self.settings = settings
         self.tools = tools
-        self.client = client or OllamaChatClient(settings.base_url, settings.model, settings.timeout_s)
+        self.client = client or OllamaChatClient(settings.base_url, settings.model, settings.timeout_s,
+                                                keep_alive=settings.keep_alive)
 
     def run(self, question: str, previous_question: str | None = None, history: list[str] | None = None,
             verified_context: VerifiedTurn | None = None) -> AgentOutcome:
