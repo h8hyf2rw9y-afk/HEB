@@ -115,3 +115,27 @@ def resolve_data_followup(question: str, previous: VerifiedTurn | None,
     if about_store and store and (SALES_RE.search(q) or "le fue" in q or "esa tienda" in q):
         return f"¿Cuánto vendió {store} en {month} de 2026?"
     return None
+
+
+
+def resolve_policy_followup(question: str, previous: VerifiedTurn | None) -> str | None:
+    """Expand a clearly dependent policy follow-up into a NEW retrieval query.
+
+    Previous answers are not returned from cache; the RAG runs again with the
+    omitted topic supplied. For unrelated or ambiguous questions, do nothing.
+    """
+    if previous is None or not previous.is_grounded or previous.kind != "grounded_policy":
+        return None
+    q = _plain(question).strip(" ¿?¡!.,;:")
+    prior = _plain(previous.question)
+    # Only a dependent utterance qualifies; a new self-contained question
+    # must never inherit unrelated business policy.
+    if not re.match(r"^(?:y si|y entonces|y que pasa si|entonces que pasa si|pero si|y en ese caso)\b", q):
+        return None
+    topics = ("devoluc", "devolver", "reembols", "merma", "caduc", "garant")
+    if not any(term in prior for term in topics):
+        return None
+    if any(term in q for term in topics):
+        return None
+    combined = f"{previous.question.rstrip(' ?¿!.')}. {question.strip()}"
+    return combined if len(combined) <= 1000 else None
