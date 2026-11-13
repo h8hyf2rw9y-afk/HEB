@@ -1,7 +1,7 @@
 # Documento de decisiones
 
-Nombre: [PENDIENTE: tu nombre]
-Fecha: [PENDIENTE: fecha de envío]
+Nombre: Emiliano Gonzalez Romo
+Fecha: 13 de noviembre de 2026
 Repositorio: https://github.com/h8hyf2rw9y-afk/HEB
 Proveedor y modelos usados: Ollama local, sin APIs de pago. `qwen3:4b-instruct` redacta las respuestas y, en preguntas ambiguas, elige la consulta; antes medí `llama3.2`. Las cifras salen de DuckDB con SQL fijo y parametrizado; las políticas, de una búsqueda BM25 sobre los 4 PDF (embeddings `bge-m3` opcionales).
 
