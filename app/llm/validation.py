@@ -325,6 +325,18 @@ def compose_grounded_answer(*, kind: str, question: str, verified: str,
     # A model that invented facts or attempted instructions must not be shown.
     if kind != "datos" or conflicts or not candidate.strip() or has_injection(candidate):
         return ComposedRewrite(False, verified, strict.failures)
+    # Missing individual SKU, per-item existence, return constraints or
+    # support-ticket details must never be disguised with an appendix:
+    # those are operational instructions, not a simple store summary.
+    summary = _plain(verified)
+    safe_summary = (
+        "ventas netas por tienda" in summary
+        or "productos distintos por tienda" in summary
+        or "tiendas registradas" in summary
+    )
+    if (not safe_summary or SKU_RE.search(verified)
+            or "existencia" in summary or "punto de reorden" in summary):
+        return ComposedRewrite(False, verified, strict.failures)
     if not all(
         issue.startswith(("cifras o fechas omitidas", "falta «", "cifras de «"))
         for issue in strict.failures
