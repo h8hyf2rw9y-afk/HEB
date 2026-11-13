@@ -487,3 +487,61 @@ def validate_data_summary(*, question: str, verified: str, summary: str,
     if INJECTION_RE.search(cand):
         failures.append("reproduce instrucciones inyectadas")
     return ValidationResult(not failures, sorted(set(failures)))
+
+
+# --- Long policy answers: the model writes a short summary, the app shows the cited text ---
+
+def validate_policy_summary(*, question: str, verified: str, summary: str, allowed_sources: set[str],
+                            conflicts: list[dict] | None = None) -> ValidationResult:
+    """A 2-4 sentence summary of a long, cited policy answer. The full verified text
+    (every condition and citation) is shown right below it, so the summary may omit
+    details; it may not add figures, dates, citations, documents or codes, present the
+    losing side of a contradiction as the rule, or pick a winner the source did not."""
+    failures: list[str] = []
+    cand = summary.strip()
+    if not cand:
+        return ValidationResult(False, ["respuesta vacía"])
+    if len(cand) > 1200:
+        failures.append("resumen demasiado largo")
+    v, q, c = extract_facts(verified), extract_facts(question), extract_facts(cand)
+    extra = set(c.values) - v.values - q.values
+    if extra:
+        failures.append("cifras o fechas nuevas: " + ", ".join(sorted(extra)))
+    invented = sorted(c.citations - v.citations)
+    if invented:
+        failures.append("citas inexistentes: " + " ".join(invented))
+    unknown_files = sorted(c.files - v.files - {s.lower() for s in allowed_sources})
+    if unknown_files:
+        failures.append("fuentes inexistentes: " + ", ".join(unknown_files))
+    new_codes = sorted(c.codes - v.codes)
+    if new_codes:
+        failures.append("códigos de documento nuevos: " + ", ".join(new_codes))
+
+    def prevails(doc: str) -> bool:
+        return bool(re.search(r"(?<!no )(?<!no se )prevalece\s+(?:el\s+|la\s+)?" + re.escape(doc), cand, re.IGNORECASE))
+
+    p_cand = _plain(cand)
+    for conflict in conflicts or []:
+        preferred = conflict.get("preferred_document")
+        claims = conflict.get("claims", [])
+        docs = [cl.get("document", "") for cl in claims if cl.get("document")]
+        if conflict.get("resolution") == "resolved_by_source" and preferred:
+            for doc in docs:
+                if doc != preferred and prevails(doc):
+                    failures.append(f"declara que prevalece {doc}, contra la fuente")
+            # A figure that only the losing document states (FAQ: 15 días) may appear
+            # only together with the governing figure and the precedence.
+            losing = set().union(*[extract_facts(" ".join(cl.get("values") or [])).values
+                                   for cl in claims if cl.get("document") != preferred] or [set()])
+            winning = set().union(*[extract_facts(" ".join(cl.get("values") or [])).values
+                                    for cl in claims if cl.get("document") == preferred] or [set()])
+            if (losing - winning) & c.values:
+                if not (winning <= c.values and ("prevalece" in p_cand or "contradic" in p_cand)):
+                    failures.append("presenta la versión que no prevalece sin la que sí prevalece")
+        elif re.search(r"(?<!no )prevalece\s+(?:el\s+|la\s+)?[\w-]+\.pdf", cand, re.IGNORECASE):
+            failures.append("elige un documento ganador en una contradicción sin resolver")
+    if SQL_RE.search(cand):
+        failures.append("contiene SQL o código")
+    if INJECTION_RE.search(cand):
+        failures.append("reproduce instrucciones inyectadas")
+    return ValidationResult(not failures, sorted(set(failures)))

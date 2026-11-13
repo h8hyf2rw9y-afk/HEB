@@ -8,10 +8,16 @@ from dataclasses import dataclass, field
 
 from .config import LLMSettings
 from .ollama_client import ChatResult, LLMError, OllamaChatClient
-from .prompts import build_messages, build_summary_messages
-from .validation import compose_grounded_answer, has_injection, validate_data_summary, validate_rewrite
+from .prompts import build_messages, build_policy_summary_messages, build_summary_messages
+from .validation import (compose_grounded_answer, has_injection, validate_data_summary,
+                         validate_policy_summary, validate_rewrite)
 
 SUMMARY_MAX_TOKENS = 220
+# Long policy answers (e.g. a product's deadline + the in-store steps) are summarized
+# instead of rewritten: a small local model cannot reproduce ~5,000 characters with
+# every citation (observed: 62 s of generation, then rejected). The cited text is shown.
+POLICY_SUMMARY_MIN_CHARS = 1200
+POLICY_SUMMARY_MAX_TOKENS = 260
 POLICY_MAX_TOKENS = 1600
 
 
@@ -84,15 +90,20 @@ class GroundedWriter:
         start = time.perf_counter()
         try:
             summary_mode = kind == "datos" and not conflicts
+            policy_summary = kind == "politicas" and len(verified_answer) >= POLICY_SUMMARY_MIN_CHARS
+            if summary_mode:
+                messages, budget = (build_summary_messages(question, verified_answer),
+                                    min(self.settings.max_output_tokens, SUMMARY_MAX_TOKENS))
+            elif policy_summary:
+                messages, budget = (build_policy_summary_messages(question, verified_answer, conflicts),
+                                    min(self.settings.max_output_tokens, POLICY_SUMMARY_MAX_TOKENS))
+            else:
+                messages, budget = (build_messages(question, kind, verified_answer, conflicts),
+                                    policy_output_budget(verified_answer, self.settings.max_output_tokens))
+            # Summaries are 2-4 sentences: cap generation, the slowest stage on a laptop
+            # (about 6-9 tokens/s measured with Qwen3 4B).
             result: ChatResult = self.client.chat(
-                build_summary_messages(question, verified_answer) if summary_mode
-                else build_messages(question, kind, verified_answer, conflicts),
-                temperature=self.settings.temperature,
-                seed=self.settings.seed,
-                # A data summary is 2-4 sentences: cap generation, which is the
-                # slowest stage on a laptop (about 5 tokens/s observed with Qwen3 4B).
-                num_predict=min(self.settings.max_output_tokens, SUMMARY_MAX_TOKENS) if summary_mode
-                else policy_output_budget(verified_answer, self.settings.max_output_tokens),
+                messages, temperature=self.settings.temperature, seed=self.settings.seed, num_predict=budget,
             )
         except LLMError as exc:
             fallback.fallback_reason = exc.reason
@@ -124,6 +135,8 @@ class GroundedWriter:
         sources = {e.get("source", "") for e in evidence if isinstance(e, dict)}
         if summary_mode:
             return self._data_summary(outcome, question, verified_answer, result.content, sources)
+        if policy_summary:
+            return self._policy_summary(outcome, question, verified_answer, result.content, sources, conflicts)
         composed = compose_grounded_answer(
             kind=kind,
             question=question,
@@ -163,5 +176,22 @@ class GroundedWriter:
                                     candidate=summary, allowed_sources=sources).ok
         outcome.answer = summary.strip() if complete else (
             summary.strip() + "\n\n**Detalle verificado (DuckDB):**\n" + verified)
+        outcome.generated = True
+        return outcome
+
+    @staticmethod
+    def _policy_summary(outcome: GenerationOutcome, question: str, verified: str, summary: str,
+                        sources: set[str], conflicts: list[dict] | None) -> GenerationOutcome:
+        """Long policy answers: the model's summary, then the full verified text with
+        every condition and citation, exactly as retrieved."""
+        check = validate_policy_summary(question=question, verified=verified, summary=summary,
+                                        allowed_sources=sources, conflicts=conflicts)
+        if not check.ok:
+            outcome.fallback_reason = "validacion_fallida"
+            outcome.warnings.append("Respuesta determinista; el resumen del modelo no pasó la validación: "
+                                    + "; ".join(check.failures))
+            logger.info("LLM policy summary rejected: %s", check.failures)
+            return outcome
+        outcome.answer = summary.strip() + "\n\n**Texto verificado de las políticas:**\n" + verified
         outcome.generated = True
         return outcome
