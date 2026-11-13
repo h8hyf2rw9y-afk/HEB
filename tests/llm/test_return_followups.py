@@ -199,7 +199,7 @@ def test_exchange_and_refund_comparison_needs_both_policy_concepts():
     from app.api.return_intents import check_return_evidence, route_returns
     question = "Se puede cambiar un producto o es decir un rembolso ?"
     # The common misspelling "rembolso" should still be understood.
-    route = route_returns("¿Puedo cambiar un producto o es decir un reembolso?")
+    route = route_returns(question)
     assert route is not None and route.kind == "exchange_vs_refund"
     assert "diferencia" in route.query.lower()
     source = [{"source": "procedimiento_devoluciones.pdf", "source_type": "pdf"}]
