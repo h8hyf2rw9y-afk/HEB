@@ -95,7 +95,7 @@ def is_general_conversation(question: str) -> bool:
     q = _plain(question).strip().strip(" ¡!¿?.,;:")
     # "¿Por qué crees que vendió más?" is a sales follow-up, NOT general
     # chat. Verbs like "vendió" were missing from _WORKPLACE_CONTEXT.
-    if re.search(r"\\b(?:vend\\w*|factur\\w*|ingresos|margen|productos?|sucursales?)\\b", q):
+    if re.search(r"\b(?:vend\w*|factur\w*|ingresos|margen|productos?|sucursales?)\b", q):
         return False
     return bool(_GENERAL_CHAT.search(q) and not _WORKPLACE_CONTEXT.search(q))
 
