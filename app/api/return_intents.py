@@ -17,6 +17,11 @@ def plain(text: str) -> str:
 
 _RECEIPT = re.compile(r"\b(?:sin (?:el )?ticket|no (?:tiene|trae|presenta|encuentra|conserva) (?:el )?ticket|sin (?:el )?comprobante|sin (?:su )?recibo|ticket de compra)\b")
 _RETURN = re.compile(r"\b(?:devoluc\w*|devolver|devuelve|reembols\w*|cambio de producto|devolviendo)\b")
+_EXCHANGE_VS_REFUND = re.compile(
+    r"\b(?:cambiar|cambio)\b.{0,100}\b(?:reembols\w*|devoluc\w*)\b"
+    r"|\b(?:reembols\w*|devoluc\w*)\b.{0,100}\b(?:cambiar|cambio)\b"
+)
+
 _ORIGINAL_CARD = re.compile(
     r"\b(?:sin (?:la )?tarjeta|no (?:trae|tiene|presenta) (?:la )?tarjeta|"
     r"tarjeta original|tarjeta (?:de credito|de debito)|pago con tarjeta)\b"
@@ -39,6 +44,12 @@ def route_returns(question: str, previous_question: str | None = None) -> Return
     previous = plain(previous_question or "")
     if _SERVICE.search(q):
         return None
+    if _EXCHANGE_VS_REFUND.search(q):
+        return ReturnRoute(
+            "exchange_vs_refund",
+            "¿Cuál es la diferencia entre cambio de producto y reembolso "
+            "según las definiciones y condiciones de procedimiento_devoluciones.pdf?",
+        )
     # Missing the payment card is not a missing purchase receipt. Let RAG
     # retrieve section 6.1 (reimbursements without the original card).
     if _ORIGINAL_CARD.search(q):
@@ -75,6 +86,15 @@ def check_return_evidence(kind: str, *, status: str, answer: str, evidence: list
         return False
     sources = {str(item.get("source", "")) for item in evidence}
     text = plain(answer)
+    if kind == "exchange_vs_refund":
+        # A definition of exchange alone does not establish whether, when,
+        # or how a refund may be made. Require both concepts in the evidence.
+        return (
+            "procedimiento_devoluciones.pdf" in sources
+            and "[procedimiento_devoluciones.pdf," in answer
+            and bool(re.search(r"\bcambio\b|\bcambiar\b", text))
+            and bool(re.search(r"\breembols\w*\b", text))
+        )
     if kind == "no_receipt":
         return (
             "faq_gerentes_de_tienda.pdf" in sources
