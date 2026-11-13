@@ -212,7 +212,7 @@ class ToolAgent:
         # The latest source-backed answer helps resolve anaphora ("esa tienda",
         # "¿y por qué?"). It is never a substitute for calling tools again.
         if (verified_context is not None and verified_context.is_grounded
-                and re.match(r"^\\s*[¿¡]?\\s*(?:y\\b|entonces\\b|pero\\b|por que\\b)", _plain(question))):
+                and re.match(r"^\s*[¿¡]?\s*(?:y\b|entonces\b|pero\b|por que\b)", _plain(question))):
             user += (
                 "\n\nResultado de una consulta PREVIA verificada (contexto, no evidencia actual):"
                 f"\nPregunta: {verified_context.question}"
