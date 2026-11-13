@@ -17,6 +17,10 @@ def plain(text: str) -> str:
 
 _RECEIPT = re.compile(r"\b(?:sin (?:el )?ticket|no (?:tiene|trae|presenta|encuentra|conserva) (?:el )?ticket|sin (?:el )?comprobante|sin (?:su )?recibo|ticket de compra)\b")
 _RETURN = re.compile(r"\b(?:devoluc\w*|devolver|devuelve|reembols\w*|cambio de producto|devolviendo)\b")
+_ORIGINAL_CARD = re.compile(
+    r"\b(?:sin (?:la )?tarjeta|no (?:trae|tiene|presenta) (?:la )?tarjeta|"
+    r"tarjeta original|tarjeta (?:de credito|de debito)|pago con tarjeta)\b"
+)
 _SERVICE = re.compile(r"\b(?:mesa de servicio|soporte|incidencia|averia|falla del sistema|levantar (?:un )?ticket|ticket de soporte)\b")
 _GENERIC_PROCEDURE = re.compile(
     r"\b(?:proceso|procedimiento|pasos|tramite|hacer|funciona|que pasa|como)\b"
@@ -34,6 +38,10 @@ def route_returns(question: str, previous_question: str | None = None) -> Return
     q = plain(question).strip(" ¿?¡!.,;:")
     previous = plain(previous_question or "")
     if _SERVICE.search(q):
+        return None
+    # Missing the payment card is not a missing purchase receipt. Let RAG
+    # retrieve section 6.1 (reimbursements without the original card).
+    if _ORIGINAL_CARD.search(q):
         return None
 
     has_return = bool(_RETURN.search(q))
