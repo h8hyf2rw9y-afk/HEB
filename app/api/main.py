@@ -47,11 +47,15 @@ def _tool_policies(query: str) -> ToolResult:
     evidence = [e.to_http_evidence() for e in r.evidence]
     if returns and not check_return_evidence(returns.kind, status=r.status,
                                              answer=r.answer, evidence=evidence):
-        return ToolResult(
-            kind="politicas", status="needs_clarification",
-            answer="No se encontró evidencia pertinente para esta devolución. "
-                   "Indica tipo de producto y comprobante de compra.",
+        message = (
+            "La evidencia recuperada no permite explicar de manera verificada "
+            "ambos conceptos (cambio de producto y reembolso). "
+            "No debo equipararlos basándome únicamente en la definición de cambio."
+            if returns.kind == "exchange_vs_refund" else
+            "No se encontró evidencia pertinente para esta devolución. "
+            "Indica tipo de producto y comprobante de compra."
         )
+        return ToolResult(kind="politicas", status="needs_clarification", answer=message)
     m = r.metrics
     return ToolResult(
         kind="politicas", status=r.status, answer=r.answer,
@@ -357,6 +361,11 @@ def _deterministic_chat(request: ChatRequest, start: float, writer: GroundedWrit
         if not check_return_evidence(return_route.kind, status=result.status,
                                      answer=result.answer, evidence=evidence):
             message = (
+                "No pude verificar en los documentos disponibles tanto la definición "
+                "de cambio de producto como las condiciones de reembolso; no son "
+                "automáticamente equivalentes. ¿Quieres consultar los requisitos de "
+                "cambio o las condiciones de reembolso?"
+                if return_route.kind == "exchange_vs_refund" else
                 "No encontré una sección suficientemente pertinente del procedimiento "
                 "general de devoluciones. ¿Qué tipo de producto desea devolver el cliente "
                 "y tiene ticket de compra?"
