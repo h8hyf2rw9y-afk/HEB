@@ -13,3 +13,7 @@ __pycache__/
 /data/policies/
 /data/rag_index/
 /data/synthetic_policies/
+
+# Local model evaluations (can include conversation prompts and generated answers)
+/data/eval_llm_modes*.json
+/data/eval_agent_conversations*.json
