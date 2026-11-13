@@ -25,7 +25,7 @@ Para la demostración recomendamos el modelo **qwen3:4b-instruct**. También se 
 
 **1. Obtener el proyecto y crear un entorno Python (terminal 1).**
 
-    git clone -b feature/ollama-grounded-answering https://github.com/h8hyf2rw9y-afk/HEB.git
+    git clone https://github.com/h8hyf2rw9y-afk/HEB.git
     cd HEB
     py -3.11 -m venv .venv
     .\.venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -33,8 +33,8 @@ Para la demostración recomendamos el modelo **qwen3:4b-instruct**. También se 
 Si ya lo tenías clonado, desde HEB ejecuta:
 
     git fetch origin
-    git switch feature/ollama-grounded-answering
-    git pull --ff-only origin feature/ollama-grounded-answering
+    git switch main
+    git pull --ff-only origin main
     .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
 Si falta el entorno .venv, créalo con py -3.11 -m venv .venv antes de instalar dependencias. No necesitas activar el entorno: todos los comandos indican su ejecutable Python.
@@ -71,8 +71,9 @@ Deja esta terminal abierta. El backend queda en http://127.0.0.1:8000.
     Invoke-RestMethod http://127.0.0.1:8000/health
     Invoke-RestMethod http://127.0.0.1:8000/health/llm
     Invoke-RestMethod http://127.0.0.1:8000/health/rag
+    Invoke-RestMethod http://127.0.0.1:8000/health/ollama
 
-Debes obtener **status: ok**, **enabled: true**, **model: qwen3:4b-instruct** y **ready: true** en RAG. El endpoint /health/llm muestra la configuración del backend, **no** hace una generación de prueba: prueba una pregunta real y revisa sus métricas para confirmar Ollama.
+Debes obtener **status: ok**, **enabled: true**, **model: qwen3:4b-instruct** y **ready: true** en RAG. El endpoint /health/llm solo muestra la configuración del backend. **/health/ollama** sí consulta a Ollama en vivo: debe responder **reachable: true** y **model_available: true**.
 
 **6. Iniciar Streamlit (terminal 4, abierta en HEB).**
 
@@ -87,7 +88,7 @@ Instala primero Git, **Python 3.11** y Ollama desde sus páginas oficiales. No d
 
 **1. Clonar, instalar y construir el índice:**
 
-    git clone -b feature/ollama-grounded-answering https://github.com/h8hyf2rw9y-afk/HEB.git
+    git clone https://github.com/h8hyf2rw9y-afk/HEB.git
     cd HEB
     python3.11 -m venv .venv
     ./.venv/bin/python -m pip install -r requirements.txt
@@ -113,7 +114,7 @@ Si Ollama no se ejecuta como servicio, utiliza **ollama serve** en otra terminal
     export HEB_CHAT_TIMEOUT_S=540
     ./.venv/bin/python -m streamlit run frontend/app.py
 
-Abre http://localhost:8501. Para verificar salud, usa curl con las rutas /health, /health/llm y /health/rag en http://127.0.0.1:8000.
+Abre http://localhost:8501. Para verificar salud, usa curl con las rutas /health, /health/llm, /health/rag y /health/ollama en http://127.0.0.1:8000.
 
 ## Prueba de funcionamiento (2–3 minutos)
 
@@ -125,7 +126,7 @@ Escribe estas preguntas en el chat. **Las preguntas de seguimiento deben hacerse
 4. ¿Cuál es el procedimiento para devolver un producto?
 5. ¿Y si el cliente no tiene ticket de compra?
 
-En **Métricas de la consulta**, revisa el modelo, las llamadas LLM, si la respuesta fue generada, las fuentes CSV/PDF, las consultas a herramientas y cualquier fallback. Las cifras vienen de los CSV y las políticas de los PDF, no de la memoria del modelo. **Las ventas solo abarcan junio–agosto de 2026; el inventario es un corte del 1 de septiembre de 2026.** La app debe reconocer preguntas que excedan las fuentes disponibles.
+En **Fuentes** aparece cada cita con el pasaje exacto del PDF. En **Métricas de la consulta**, revisa el modelo, las llamadas LLM, si la respuesta fue generada, las consultas a herramientas, cualquier fallback y el tiempo por etapa (carga del modelo, lectura del prompt, generación, tokens/s y herramientas). La pantalla **Fuentes de datos** muestra los CSV, los PDF indexados y si Ollama responde. Las cifras vienen de los CSV y las políticas de los PDF, no de la memoria del modelo. **Las ventas solo abarcan junio–agosto de 2026; el inventario es un corte del 1 de septiembre de 2026.** La app debe reconocer preguntas que excedan las fuentes disponibles.
 
 Si la respuesta indica **generated=false**, el sistema puede haber devuelto los datos verificados directamente porque Ollama falló, estaba desactivado o no superó la validación. No se deben presentar cifras inventadas como hechos.
 
@@ -152,6 +153,16 @@ CI ejecuta pruebas en Windows y Ubuntu usando un **Ollama simulado**. Estas prue
 
     ./.venv/bin/python scripts/eval_agent_conversations.py --out data/eval_agent_conversations.json
     ./.venv/bin/python scripts/eval_llm_modes.py --out data/eval_llm_modes.json
+
+Para estimar cuánto costarían esos tokens con la API de Anthropic (simulación: el costo real por token es $0 porque el modelo corre localmente):
+
+**Windows:**
+
+    .\.venv\Scripts\python.exe scripts\simulate_api_cost.py data\eval_llm_modes.json
+
+**macOS/Linux:**
+
+    ./.venv/bin/python scripts/simulate_api_cost.py data/eval_llm_modes.json
 
 Verifica manualmente la precisión y las citas PDF de las respuestas reales.
 

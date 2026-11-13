@@ -67,11 +67,24 @@ def test_every_result_has_document_page_passage_score(retriever):
         assert e.page >= 1
         assert e.passage
         assert e.score is not None and e.score > 0
-    assert ev[0].to_http_evidence() == {
+    http = ev[0].to_http_evidence()
+    assert {k: http[k] for k in ("source_type", "source", "reference", "page", "chunk_id")} == {
         "source_type": "pdf",
         "source": "SINTETICO_manual_seguridad_tienda.pdf",
         "reference": "p. 1, sección: 1. Montacargas",
+        "page": 1,
+        "chunk_id": ev[0].chunk_id,
     }
+    # The passage shown to the user is the retrieved text itself (whitespace-normalised).
+    assert http["passage"] and " ".join(ev[0].passage.split()).startswith(http["passage"].removesuffix(" …"))
+
+
+def test_http_evidence_passage_is_bounded():
+    from app.rag.interface import PolicyEvidence
+
+    ev = PolicyEvidence(document="d.pdf", page=2, passage="palabra " * 400, section="S", score=1.0, chunk_id="d.pdf#3")
+    http = ev.to_http_evidence()
+    assert len(http["passage"]) <= 602 and http["passage"].endswith(" …") and http["chunk_id"] == "d.pdf#3"
 
 
 def test_save_load_roundtrip_and_gitignore(tmp_path, hybrid_index):

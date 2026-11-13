@@ -345,14 +345,29 @@ class ToolAgent:
         if warning:
             record["warning"] = f"{warning}; se usó la pregunta original"
         record["query"] = query
-        try:
-            result = fn(query)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Tool %s failed", name)
-            result = ToolResult(kind="datos" if name == "consultar_datos_tienda" else "politicas",
-                                status="error", answer=f"No se pudo ejecutar la consulta ({type(exc).__name__}).")
+        t0 = time.perf_counter()
+        result = self._call_tool(fn, name, query)
+        if result.status != "answered" and query.strip() != question.strip():
+            # The model's reformulation found nothing (e.g. "definición de SIGMA"):
+            # the user's own words may still match the sources, so try them once.
+            retry = self._call_tool(fn, name, question[:1000])
+            record["first_query_status"] = result.status
+            record["retried_with_original_question"] = True
+            if retry.status == "answered":
+                result = retry
+                record["query"] = question[:1000]
+        record["duration_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         record["status"] = result.status
         return result, record
+
+    @staticmethod
+    def _call_tool(fn: ToolFn, name: str, query: str) -> ToolResult:
+        try:
+            return fn(query)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Tool %s failed", name)
+            return ToolResult(kind="datos" if name == "consultar_datos_tienda" else "politicas",
+                              status="error", answer=f"No se pudo ejecutar la consulta ({type(exc).__name__}).")
 
     def _verified(self, out: AgentOutcome, results: list[ToolResult], reason: str, start: float) -> AgentOutcome:
         """Show the tools' verified output verbatim (the model chose the query, not the words)."""

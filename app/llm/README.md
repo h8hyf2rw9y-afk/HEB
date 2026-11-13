@@ -67,6 +67,8 @@ Las respuestas con estado `insufficient_data`, `needs_clarification` o `error` *
 | `generated` | `true` solo si la respuesta mostrada la escribió el modelo |
 | `fallback_reason` | `llm_desactivado`, `estado_<x>_no_se_redacta`, `ollama_no_disponible`, `timeout`, `respuesta_vacia`, `respuesta_invalida`, `validacion_fallida`, `evidencia_con_instrucciones_sospechosas` o `null` |
 | `embedding_calls`, `embedding_input_tokens`, `embedding_latency_ms` | Embeddings de la recuperación híbrida, contados aparte |
+| `tool_calls` | Modo agente: herramienta elegida, consulta ejecutada, estado, `duration_ms`; `retried_with_original_question` si la reformulación del modelo no encontró nada y se reintentó con la pregunta original |
+| `timings` | Tiempo por etapa: carga del modelo, lectura del prompt, generación, tokens/s, herramientas y resto (ruteo, SQL, recuperación, validación) |
 
 **Costo:** la inferencia es local, así que no hay costo por token de API. Sí hay costo de ejecución local: el modelo ocupa memoria (`load_duration` de Ollama) y CPU o GPU durante segundos por respuesta, frente a milisegundos del modo determinista. Los tokens de embeddings son otro consumo distinto, que se reporta por separado.
 

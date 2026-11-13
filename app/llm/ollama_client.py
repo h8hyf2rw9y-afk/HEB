@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 import httpx
@@ -96,6 +98,20 @@ def _tool_calls(raw: object) -> list[dict]:
     return calls
 
 
+_CALL_LOG: ContextVar[list | None] = ContextVar("heb_llm_call_log", default=None)
+
+
+@contextmanager
+def record_llm_calls():
+    """Collect stage timings of every Ollama /api/chat call made inside the block
+    (one list per request; /chat wraps each request with it)."""
+    token = _CALL_LOG.set([])
+    try:
+        yield _CALL_LOG.get()
+    finally:
+        _CALL_LOG.reset(token)
+
+
 class OllamaChatClient:
     def __init__(self, base_url: str, model: str, timeout_s: float, transport: httpx.BaseTransport | None = None):
         self.base_url = base_url.rstrip("/")
@@ -139,7 +155,7 @@ class OllamaChatClient:
         if not content.strip() and not tool_calls:
             raise LLMEmptyResponse("Ollama devolvió una respuesta vacía")
         model = data.get("model")
-        return ChatResult(
+        result = ChatResult(
             content=content.strip(),
             model=model if isinstance(model, str) and model.strip() else self.model,
             prompt_tokens=_token_count(data, "prompt_eval_count"),
@@ -150,3 +166,10 @@ class OllamaChatClient:
             eval_ms=_ms(data.get("eval_duration")),
             tool_calls=tool_calls,
         )
+        log = _CALL_LOG.get()
+        if log is not None:
+            log.append({"latency_ms": result.latency_ms, "load_ms": result.load_ms,
+                        "prompt_eval_ms": result.prompt_eval_ms, "eval_ms": result.eval_ms,
+                        "prompt_tokens": result.prompt_tokens, "completion_tokens": result.completion_tokens,
+                        "tokens_per_s": result.tokens_per_s, "used_tools": bool(tools)})
+        return result

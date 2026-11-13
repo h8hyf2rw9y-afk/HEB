@@ -30,7 +30,9 @@ def test_policy_question_maps_evidence_and_metrics(monkeypatch):
     data = client.post("/chat", json={"question": "¿Cuál es la política de devoluciones?"}).json()
     assert data["status"] == "answered"
     assert data["evidence"] == [
-        {"source_type": "pdf", "source": "devoluciones.pdf", "reference": "p. 2, sección: Reglas"}
+        {"source_type": "pdf", "source": "devoluciones.pdf", "reference": "p. 2, sección: Reglas",
+         # Additive fields: the auditable passage behind the citation.
+         "page": 2, "chunk_id": "c1", "passage": "Se aceptan devoluciones."}
     ]
     assert data["metrics"]["embedding_calls"] == 1
     assert data["metrics"]["embedding_input_tokens"] == 12

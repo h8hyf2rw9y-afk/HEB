@@ -1,6 +1,7 @@
 """FastAPI entry points for structured queries and grounded policy answers."""
 from __future__ import annotations
 
+import csv
 import os
 import re
 import time
@@ -11,13 +12,14 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.data.catalog import build_catalog
-from app.api.assistant_chat import classify_assistant_question, assistant_answer, is_general_conversation
+from app.api.assistant_chat import classify_assistant_question, assistant_answer, check_ollama, is_general_conversation
 from app.api.business_intents import route_business_question
 from app.api.return_intents import route_returns, check_return_evidence
 from app.api.session_memory import SESSIONS
 from app.api.followup import resolve_data_followup, resolve_policy_followup
 from app.llm import AgentOutcome, GroundedWriter, LLMSettings, ToolAgent, ToolResult
 from app.llm.general import generate_general_answer
+from app.llm.ollama_client import record_llm_calls
 from app.rag.interface import PolicySearchRequest, rag_health, search_policies
 from app.tools.structured import StructuredRequest, query_dataset
 from app.tools.analytics import answer_data_question, looks_like_data
@@ -97,6 +99,9 @@ class Metrics(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     # Agent mode: verified tools the model chose to run, with the query actually executed.
     tool_calls: list[dict] = Field(default_factory=list)
+    # Where the time went: every Ollama call (load / prompt reading / generation, tokens/s),
+    # tool execution in agent mode, and the rest (routing, SQL, retrieval, validation).
+    timings: dict = Field(default_factory=dict)
     resolved_question: str | None = None  # grounded continuation query, never a cached answer
 
 
@@ -137,6 +142,53 @@ def health() -> dict[str, str]:
 def health_rag() -> dict:
     # No explicit settings: inspect the same shared retriever used by /chat.
     return rag_health()
+
+
+@app.get("/health/ollama")
+def health_ollama() -> dict:
+    """Live probe: asks Ollama which models are installed (GET /api/tags, no generation).
+    Unlike /health/llm, this proves whether the server answers right now."""
+    status = check_ollama(LLM_SETTINGS)
+    return {"enabled": LLM_SETTINGS.enabled, "base_url": LLM_SETTINGS.base_url,
+            "model": LLM_SETTINGS.model, **status}
+
+
+_DATA_DIR = Path(__file__).resolve().parents[2] / "candidatos" / "datos"
+_DATE_COLUMNS = ("fecha", "fecha_creacion", "fecha_ultimo_conteo", "fecha_corte")
+
+
+def _csv_summary(path: Path) -> dict:
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        reader = csv.DictReader(fh)
+        columns = list(reader.fieldnames or [])
+        date_col = next((c for c in _DATE_COLUMNS if c in columns), None)
+        rows, lo, hi = 0, None, None
+        for row in reader:
+            rows += 1
+            value = (row.get(date_col) or "").strip() if date_col else ""
+            if value:
+                lo = value if lo is None or value < lo else lo
+                hi = value if hi is None or value > hi else hi
+    return {"file": path.name, "rows": rows, "columns": columns,
+            "date_column": date_col, "date_min": lo, "date_max": hi}
+
+
+@app.get("/sources")
+def sources() -> dict:
+    """What the assistant can actually answer from: the CSV files queried with fixed SQL
+    and the PDF policies in the RAG index. Read-only; there is no upload endpoint."""
+    datasets = []
+    for path in sorted(_DATA_DIR.glob("*.csv")):
+        try:
+            datasets.append(_csv_summary(path))
+        except (OSError, csv.Error, UnicodeDecodeError) as exc:
+            datasets.append({"file": path.name, "error": type(exc).__name__})
+    rag = rag_health()
+    return {"datasets": datasets, "policies": {
+        "ready": rag.get("ready", False), "documents": rag.get("document_list", []),
+        "chunks": rag.get("chunks"), "embeddings_enabled": rag.get("embeddings_enabled"),
+        "built_at": rag.get("built_at"), "error": rag.get("error"),
+    }}
 
 
 @app.get("/health/llm")
@@ -225,8 +277,34 @@ def _agent_metrics(out: AgentOutcome, start: float) -> Metrics:
     )
 
 
+def _stage_timings(llm_log: list[dict], metrics: "Metrics") -> dict:
+    llm_total = round(sum(c["latency_ms"] for c in llm_log), 1)
+    tools_ms = round(sum(float(c.get("duration_ms") or 0) for c in metrics.tool_calls), 1)
+    timings = {
+        "total_ms": metrics.latency_ms,
+        "llm_ms": llm_total,
+        "llm_load_ms": round(sum(c["load_ms"] for c in llm_log), 1),
+        "llm_prompt_eval_ms": round(sum(c["prompt_eval_ms"] for c in llm_log), 1),
+        "llm_generation_ms": round(sum(c["eval_ms"] for c in llm_log), 1),
+        "tools_ms": tools_ms,
+        "other_ms": round(max(metrics.latency_ms - llm_total - tools_ms, 0.0), 1),
+        "llm_calls": llm_log,
+    }
+    rates = [c["tokens_per_s"] for c in llm_log if c.get("tokens_per_s")]
+    if rates:
+        timings["tokens_per_s"] = round(sum(rates) / len(rates), 1)
+    return timings
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
+    with record_llm_calls() as llm_log:
+        response = _chat(request)
+    response.metrics.timings = _stage_timings(llm_log, response.metrics)
+    return response
+
+
+def _chat(request: ChatRequest) -> ChatResponse:
     # Client-provided history has priority. Otherwise a bounded, volatile
     # conversation_id session lets a direct API client continue a dialogue.
     saved = SESSIONS.history(request.conversation_id)

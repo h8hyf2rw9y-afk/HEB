@@ -118,6 +118,67 @@ def render_evidence(evidence: object) -> None:
                 st.caption(str(item["passage"]))
 
 
+def fetch_json(url: str) -> dict | None:
+    try:
+        response = httpx.get(url, timeout=5.0)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else None
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+def render_sources(base_url: str) -> None:
+    """Read-only view of what the assistant answers from (GET /sources, /health/ollama)."""
+    st.subheader("Fuentes de datos")
+    st.caption("Solo lectura: el asistente responde únicamente con estos archivos. No hay carga de archivos desde la interfaz.")
+    sources = fetch_json(f"{base_url}/sources")
+    if sources is None:
+        st.warning("No se pudo consultar /sources. Revisa que FastAPI esté activo.")
+        return
+    st.markdown("**Datos (CSV, consultados con SQL fijo en DuckDB)**")
+    st.dataframe([
+        {"Archivo": d.get("file"), "Filas": d.get("rows"),
+         "Rango de fechas": (f'{d["date_min"]} a {d["date_max"]}' if d.get("date_min") else "—"),
+         "Columnas": ", ".join(d.get("columns") or [])}
+        for d in sources.get("datasets", [])
+    ], hide_index=True)
+    policies = sources.get("policies") or {}
+    st.markdown("**Políticas (PDF, índice RAG)**")
+    if not policies.get("ready"):
+        st.warning(f'Índice RAG no disponible: {policies.get("error") or "sin construir"}')
+    else:
+        st.dataframe([
+            {"Documento": d.get("document"), "Título": d.get("title"), "Páginas": d.get("pages"),
+             "Código": d.get("code"), "Versión": d.get("version")}
+            for d in policies.get("documents", [])
+        ], hide_index=True)
+        st.caption(f'{policies.get("chunks")} fragmentos indexados · embeddings '
+                   f'{"activos" if policies.get("embeddings_enabled") else "desactivados (BM25)"} · construido {policies.get("built_at")}')
+    ollama = fetch_json(f"{base_url}/health/ollama")
+    if ollama:
+        st.markdown("**Modelo local (Ollama)**")
+        state = ("responde" if ollama.get("reachable") else "no responde")
+        model = ("instalado" if ollama.get("model_available") else "no encontrado")
+        st.caption(f'Generación {"activada" if ollama.get("enabled") else "desactivada"} · '
+                   f'{ollama.get("model")} {model} · Ollama {state} en {ollama.get("base_url")}')
+
+
+def timing_line(metrics: dict) -> str | None:
+    """Where the time went, from metrics.timings (real Ollama counters)."""
+    t = metrics.get("timings") or {}
+    if not t or not t.get("llm_ms"):
+        return None
+    line = (f'Tiempo del modelo: {t["llm_ms"] / 1000:.1f} s (carga {t.get("llm_load_ms", 0) / 1000:.1f} s · '
+            f'lectura del prompt {t.get("llm_prompt_eval_ms", 0) / 1000:.1f} s · '
+            f'generación {t.get("llm_generation_ms", 0) / 1000:.1f} s)')
+    if t.get("tokens_per_s"):
+        line += f' · {t["tokens_per_s"]} tokens/s'
+    if t.get("tools_ms"):
+        line += f' · herramientas {t["tools_ms"] / 1000:.2f} s'
+    return line + f' · resto {t.get("other_ms", 0) / 1000:.2f} s'
+
+
 def render_metrics(metrics: object) -> None:
     if not isinstance(metrics, dict):
         return
@@ -127,6 +188,9 @@ def render_metrics(metrics: object) -> None:
         b.metric("Llamadas LLM", str(metrics.get("llm_calls", 0)))
         c.metric("Tokens LLM", f'{metrics.get("input_tokens", 0)} + {metrics.get("output_tokens", 0)}')
         st.caption(llm_summary(metrics))
+        timing = timing_line(metrics)
+        if timing:
+            st.caption(timing)
         for line in tool_call_lines(metrics):
             st.caption(line)
         if metrics.get("embedding_calls"):
@@ -196,11 +260,7 @@ def main() -> None:
         st.caption("Los archivos de la tienda permanecen en tu equipo. No se envían a GitHub desde esta interfaz.")
 
     if page == "Fuentes de datos":
-        st.subheader("Fuentes de datos")
-        st.info("Los CSV sintéticos se consultan localmente desde candidatos/datos y las políticas desde el índice RAG.")
-        st.markdown("**Flujo previsto:** seleccionar periodo → revisar archivos → validar esquema y vista previa → confirmar importación → consultar versión activa.")
-        st.markdown("**Formatos previstos:** Excel (.xlsx), CSV, PDF y ZIP. El soporte se implementará cuando existan endpoints seguros de ingestión.")
-        st.caption("Por ahora, la carga e indexación se preparan localmente mediante los procesos del backend.")
+        render_sources(base_url.rstrip("/"))
         return
 
     st.subheader("Consultas")

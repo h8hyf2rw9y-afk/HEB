@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -71,6 +70,7 @@ def evaluate(base_url: str, timeout: float) -> dict:
     latency: list[float] = []
     expected_tool_turns = 0
     expected_tool_found = 0
+    route_correct = 0
     total_tokens = 0
     fallback_count = 0
     generated_count = 0
@@ -96,6 +96,15 @@ def evaluate(base_url: str, timeout: float) -> dict:
             tools_used = [c.get("name") for c in tool_calls]
             expected_tool_turns += 1
             expected_tool_found += int(expected_tool in tools_used)
+            # A deterministic route (fast SQL, return-policy route, ...) that answered from
+            # the right kind of source is a correct path, not a tool-selection failure.
+            sources_now = [e.get("source", "") for e in (data.get("evidence") or [])]
+            expected_ext = ".csv" if expected_tool == "consultar_datos_tienda" else ".pdf"
+            planner_action = "model_tool_call" if tools_used else (
+                "deterministic_route" if metrics.get("answer_mode", "").startswith("grounded") else "none")
+            route_ok = expected_tool in tools_used or (
+                planner_action == "deterministic_route" and any(src.endswith(expected_ext) for src in sources_now))
+            route_correct += int(route_ok)
             fallback_count += int(bool(metrics.get("fallback_reason")))
             generated_count += int(bool(metrics.get("generated")))
             total_tokens += int(metrics.get("total_tokens") or 0)
@@ -108,6 +117,8 @@ def evaluate(base_url: str, timeout: float) -> dict:
                 "expected_tool": expected_tool,
                 "tools_used": tools_used,
                 "tool_selection_matches": expected_tool in tools_used,
+                "planner_action": planner_action,
+                "route_correct": route_ok,
                 "status": data.get("status"),
                 "answer": answer,
                 "evidence_sources": source_names,
@@ -148,6 +159,9 @@ def evaluate(base_url: str, timeout: float) -> dict:
             "turns_with_response": expected_tool_turns,
             "model_selected_expected_tool": expected_tool_found,
             "tool_selection_rate": round(expected_tool_found / expected_tool_turns, 3)
+            if expected_tool_turns else None,
+            # Counts equivalent deterministic routes as correct (tool_selection_rate does not).
+            "route_correct_rate": round(route_correct / expected_tool_turns, 3)
             if expected_tool_turns else None,
             "generated_answers": generated_count,
             "fallback_answers": fallback_count,
