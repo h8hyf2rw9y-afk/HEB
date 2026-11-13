@@ -323,7 +323,7 @@ class ToolAgent:
         out.fallback_reason = reason
         out.status = ("needs_clarification" if answered and partial else
                       results[0].status if partial else "answered")
-        if partial:
+        if partial and answered:
             out.warnings.append("Algunas partes de la consulta no cuentan con evidencia suficiente.")
         out.kind = "politicas" if any(r.kind == "politicas" for r in chosen) else "datos"
         out.answer = "\n\n".join(r.answer for r in chosen)
