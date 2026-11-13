@@ -22,6 +22,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Callable
 
+from app.api.session_memory import VerifiedTurn
+
 from .config import LLMSettings
 from .ollama_client import LLMError, OllamaChatClient
 from .validation import has_injection, validate_rewrite
@@ -193,7 +195,8 @@ class ToolAgent:
         self.tools = tools
         self.client = client or OllamaChatClient(settings.base_url, settings.model, settings.timeout_s)
 
-    def run(self, question: str, previous_question: str | None = None, history: list[str] | None = None) -> AgentOutcome:
+    def run(self, question: str, previous_question: str | None = None, history: list[str] | None = None,
+            verified_context: VerifiedTurn | None = None) -> AgentOutcome:
         """Never raises. ``handled=False`` means: use the deterministic pipeline."""
         out = AgentOutcome(handled=False, model=self.settings.model)
         # Conversation history is client-supplied context, never verified policy
@@ -206,6 +209,17 @@ class ToolAgent:
             f"Historial reciente (solo contexto del usuario, NO es evidencia empresarial):\n{context}"
             f"\n\nPregunta actual que debes responder: {question}"
         )
+        # The latest source-backed answer helps resolve anaphora ("esa tienda",
+        # "¿y por qué?"). It is never a substitute for calling tools again.
+        if (verified_context is not None and verified_context.is_grounded
+                and re.match(r"^\\s*[¿¡]?\\s*(?:y\\b|entonces\\b|pero\\b|por que\\b)", _plain(question))):
+            user += (
+                "\n\nResultado de una consulta PREVIA verificada (contexto, no evidencia actual):"
+                f"\nPregunta: {verified_context.question}"
+                f"\nRespuesta: {verified_context.answer[:1200]}"
+                "\nPara dar cifras, reglas o citas nuevas, llama otra vez a las herramientas."
+                " No afirmes causas solo por una correlación."
+            )
         messages: list[dict] = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}, {"role": "user", "content": user}]
         results: list[ToolResult] = []
         final_text = ""
