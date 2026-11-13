@@ -143,3 +143,54 @@ def test_model_rewording_cannot_change_store_identity():
 def test_why_followup_uses_product_breakdown_not_unverified_causes():
     resolved = resolve_data_followup("¿Y por qué crees que vendió más?", PREVIOUS)
     assert resolved == "Compara productos de Tienda Valle Norte y Tienda Cumbres en agosto de 2026."
+
+
+
+def test_causal_sales_question_is_not_free_chat():
+    from app.api.assistant_chat import is_general_conversation
+    assert not is_general_conversation("¿Por qué crees que vendió más?")
+    assert not is_general_conversation("¿Por qué crees que vendió más que otra?")
+    assert is_general_conversation("¿Por qué el cielo es azul?")
+
+
+def test_real_chat_retains_sales_context_after_unsupported_month():
+    sid = uuid4().hex
+    first = client.post("/chat", json={
+        "question": "¿Qué tienda vendió más en agosto de 2026?",
+        "conversation_id": sid,
+    }).json()
+    assert first["status"] == "answered"
+    january = client.post("/chat", json={
+        "question": "¿Y cómo le fue en enero?",
+        "conversation_id": sid,
+    }).json()
+    assert january["status"] in {"insufficient_data", "needs_clarification"}
+    last = SESSIONS.latest_verified(sid)
+    assert last is not None and "agosto" in last.question.lower()
+    why = client.post("/chat", json={
+        "question": "¿Por qué crees que vendió más que otra?",
+        "conversation_id": sid,
+    }).json()
+    assert why["status"] == "answered"
+    assert why["metrics"]["resolved_question"] is not None
+    assert "no demuestra sus causas" in why["answer"]
+
+
+def test_opt_in_fast_exact_sales_ranking(monkeypatch):
+    monkeypatch.setenv("HEB_FAST_ANALYTICS", "true")
+    class ForbiddenAgent:
+        def __init__(self):
+            from app.llm.config import LLMSettings
+            self.settings = LLMSettings(enabled=True, mode="agente")
+        def run(self, *args, **kwargs):
+            raise AssertionError("Simple ranking should not call Ollama")
+    monkeypatch.setattr(main, "AGENT", ForbiddenAgent())
+    result = client.post("/chat", json={
+        "question": "¿Qué tienda vendió más en agosto de 2026?",
+        "conversation_id": uuid4().hex,
+    }).json()
+    assert result["status"] == "answered"
+    assert "Tienda Valle Norte" in result["answer"]
+    assert result["metrics"]["llm_calls"] == 0
+    assert result["metrics"]["answer_mode"] == "grounded_data"
+    assert {e["source"] for e in result["evidence"]} == {"ventas.csv", "tiendas.csv"}
