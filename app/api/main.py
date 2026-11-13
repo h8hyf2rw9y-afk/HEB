@@ -185,12 +185,22 @@ def _fast_analytics(question: str, start: float) -> ChatResponse | None:
     if not (rank or comparison):
         return None
     result = answer_data_question(question)
+    # Fast means "skip slow model tool-selection", not "skip model writing".
+    # The model receives only the result already computed by safe SQL.
+    prose = WRITER.rewrite(question=question, kind="datos", status=result.status,
+                           verified_answer=result.answer, evidence=result.evidence)
     return ChatResponse(
-        answer=result.answer, status=result.status, evidence=result.evidence,
+        answer=prose.answer, status=result.status, evidence=result.evidence,
         metrics=Metrics(
             answer_mode="grounded_data",
+            input_tokens=prose.input_tokens, output_tokens=prose.output_tokens,
+            total_tokens=prose.total_tokens, llm_calls=prose.llm_calls,
+            llm_model=prose.model if prose.llm_calls else None,
+            generation_latency_ms=prose.generation_latency_ms,
+            generated=prose.generated, fallback_reason=prose.fallback_reason,
             latency_ms=round((time.perf_counter() - start) * 1000, 2),
-            warnings=["Consulta exacta ejecutada en DuckDB sin LLM (HEB_FAST_ANALYTICS=true)."],
+            warnings=["Consulta verificada en DuckDB; el modelo redacta el resultado cuando está disponible."]
+                     + prose.warnings,
         ),
     )
 
@@ -443,11 +453,33 @@ def _deterministic_chat(request: ChatRequest, start: float, writer: GroundedWrit
     # evidence (or an explicit clarification), not a random policy passage.
     business_result = route_business_question(question)
     if business_result is not None:
+        # The factual catalogue is deterministic, but the presentation belongs
+        # to the model. Abstentions remain exact and are never hallucinated.
+        source_kind = ("datos" if business_result.evidence and
+                       all(e.get("source_type") == "csv" for e in business_result.evidence)
+                       else "politicas")
+        prose = writer.rewrite(
+            question=question, kind=source_kind, status=business_result.status,
+            verified_answer=business_result.answer, evidence=business_result.evidence,
+        ) if business_result.evidence else None
         return ChatResponse(
-            answer=business_result.answer,
+            answer=prose.answer if prose else business_result.answer,
             status=business_result.status,
             evidence=business_result.evidence,
-            metrics=Metrics(answer_mode=("grounded_data" if business_result.evidence and all(e.get("source_type") == "csv" for e in business_result.evidence) else "source_listing" if business_result.evidence else "needs_context"), latency_ms=round((time.perf_counter() - start) * 1000, 2)),
+            metrics=Metrics(
+                answer_mode=("grounded_data" if source_kind == "datos" else
+                             "source_listing" if business_result.evidence else "needs_context"),
+                input_tokens=prose.input_tokens if prose else 0,
+                output_tokens=prose.output_tokens if prose else 0,
+                total_tokens=prose.total_tokens if prose else 0,
+                llm_calls=prose.llm_calls if prose else 0,
+                llm_model=prose.model if prose and prose.llm_calls else None,
+                generation_latency_ms=prose.generation_latency_ms if prose else 0,
+                generated=prose.generated if prose else False,
+                fallback_reason=prose.fallback_reason if prose else None,
+                warnings=prose.warnings if prose else [],
+                latency_ms=round((time.perf_counter() - start) * 1000, 2),
+            ),
         )
     # Non-business conversation uses the local LLM directly. It is not
     # represented as CSV/PDF-grounded evidence and cannot invent policy citations.
