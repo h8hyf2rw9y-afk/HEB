@@ -232,3 +232,25 @@ def test_elliptical_agent_answer_remembers_verified_ranking_tool_query(monkeypat
     assert cached is not None
     assert cached.question == "¿Qué tienda vendió más en agosto de 2026?"
     assert resolve_data_followup("¿Por qué crees que vendió más?", cached) is not None
+
+
+
+def test_fast_analytics_avoids_ollama_for_followup_comparison(monkeypatch):
+    monkeypatch.setenv("HEB_FAST_ANALYTICS", "true")
+    sid = uuid4().hex
+    first = client.post("/chat", json={
+        "question": "¿Qué tienda vendió más en agosto de 2026?",
+        "conversation_id": sid,
+    }).json()
+    assert first["metrics"]["llm_calls"] == 0
+    why = client.post("/chat", json={
+        "question": "¿Por qué crees que vendió más que otra?",
+        "conversation_id": sid,
+    }).json()
+    assert why["status"] == "answered"
+    assert why["metrics"]["resolved_question"] == (
+        "Compara productos de Tienda Valle Norte y Tienda Cumbres en agosto de 2026."
+    )
+    assert why["metrics"]["llm_calls"] == 0
+    assert "no demuestra sus causas" in why["answer"]
+    assert "Cumbres" in why["answer"] and "Valle Norte" in why["answer"]
